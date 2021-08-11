@@ -393,6 +393,17 @@ int BluetoothHciSocket::kernelDisconnectWorkArounds(int length, char* data) {
       return -3;
     }
 
+     this->_l2sockets[handle] = l2socket;
+  } else if (length == 7 && data[0] == 0x04 && data[1] == 0x05 && data[2] == 0x04 && data[3] == 0x00) {
+    unsigned short handle = *((unsigned short*)(&data[4]));
+
+    if (this->_l2sockets.count(handle) > 0) {
+      close(this->_l2sockets[handle]);
+      this->_l2sockets.erase(handle);
+    }
+  }
+}
+
 bool BluetoothHciSocket::kernelConnectWorkArounds(char* data, int length)
 {
   if (length == 29 && data[0] == 0x01 && data[1] == 0x0d && data[2] == 0x20 && data[3] == 0x19) {
