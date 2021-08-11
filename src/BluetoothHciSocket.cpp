@@ -388,10 +388,15 @@ int BluetoothHciSocket::kernelDisconnectWorkArounds(int length, char* data) {
     l2a.l2_cid = l2cid;
     l2a.l2_bdaddr_type = data[8] + 1; // BDADDR_LE_PUBLIC (0x01), BDADDR_LE_RANDOM (0x02)
 
-    if (connect(l2socket, (struct sockaddr *)&l2a, sizeof(l2a)) < -1) {
+    while (connect(l2socket, (struct sockaddr *)&l2a, sizeof(l2a) == -1) ) {
+      if(errno == EINTR) {
+        continue;
+      }
       close(l2socket);
       return -3;
     }
+
+    return 0;
   }
 }
 
