@@ -27,7 +27,6 @@
     "win32"
   ],
   "dependencies": {
-    "@mapbox/node-pre-gyp": "^1.0.5",
     "debug": "^4.3.2",
     "nan": "^2.15.0"
   },
@@ -38,16 +37,9 @@
     "jshint": "^2.13.1"
   },
   "scripts": {
-    "build": "node-pre-gyp build",
-    "install": "node-pre-gyp install --fallback-to-build",
+    "run-build": "node-gyp build",
+    "run-install": "node-gyp install",
     "test": "jshint lib/*.js && node test.js"
-  },
-  "binary": {
-    "module_name": "bluetooth_hci_socket",
-    "module_path": "./lib/binding/",
-    "host": "https://github.com/abandonware/node-bluetooth-hci-socket/releases/download/",
-    "package_name": "{module_name}-{version}-{node_abi}-{platform}-{arch}.tar.gz",
-    "remote_path": "{version}"
   },
   "jshintConfig": {
     "esversion": 6
