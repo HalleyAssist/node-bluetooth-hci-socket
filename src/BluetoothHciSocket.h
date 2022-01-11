@@ -31,11 +31,13 @@ struct sockaddr_l2 {
   uint8_t        l2_bdaddr_type;
 };
 
+class BluetoothWriteWorker;
 class BluetoothHciSocket;
+class BluetoothCommunicator;
 
 class BluetoothHciL2Socket {
   public:
-  BluetoothHciL2Socket(BluetoothHciSocket* parent, unsigned char*, char, char*, char, uint64_t expires);
+  BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char*, char, char*, char, uint64_t expires);
   ~BluetoothHciL2Socket();
   void disconnect();
   void connect();
@@ -46,14 +48,39 @@ class BluetoothHciL2Socket {
 
   private:
   int _socket;
-  BluetoothHciSocket* _parent;
+  BluetoothCommunicator* _parent;
   uint64_t _expires; // or 0 if connected
   struct sockaddr_l2 l2_src;
   struct sockaddr_l2 l2_dst;
 };
 
+class BluetoothCommunicator {
+  friend class BluetoothHciSocket;
+public:
+  BluetoothCommunicator();
+  ~BluetoothCommunicator();
+  bool write(char* data, int length);
+  void cleanup();
+  void cleanup_l2(bdaddr_t bdaddr);
+  int kernelDisconnectWorkArounds(char* data, int length);
+private:
+  int _devId;
+  int _mode;
+  int _socket;
+  uint8_t _address[6];
+  uint8_t _addressType;
+  
+  std::map<bdaddr_t, std::weak_ptr<BluetoothHciL2Socket>> _l2sockets_connected;
+  std::map<bdaddr_t, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_connecting;
+  std::map<unsigned short, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_handles;
+
+  bool kernelConnectWorkArounds(char* data, int length);
+  void setConnectionParameters(unsigned short connMinInterval, unsigned short connMaxInterval, unsigned short connLatency, unsigned short supervisionTimeout);
+};
+
 class BluetoothHciSocket : public node::ObjectWrap {
   friend class BluetoothHciL2Socket;
+  friend class BluetoothWriteWorker;
 
 public:
   static NAN_MODULE_INIT(Init);
@@ -68,11 +95,14 @@ public:
   static NAN_METHOD(Start);
   static NAN_METHOD(Stop);
   static NAN_METHOD(Write);
+  static NAN_METHOD(KernelDisconnectWorkArounds);
   static NAN_METHOD(Cleanup);
 
 private:
   BluetoothHciSocket();
   ~BluetoothHciSocket();
+
+  std::shared_ptr<BluetoothCommunicator> _communicator;
 
   void start();
   int bindRaw(int* devId);
@@ -81,16 +111,11 @@ private:
   bool isDevUp();
   void setFilter(char* data, int length);
   void stop();
-
-  void write_(char* data, int length);
-
+  void cleanup_l2(bdaddr_t addr);
   void poll();
 
   void emitErrnoError(const char *syscall);
   int devIdFor(const int* devId, bool isUp);
-  int kernelDisconnectWorkArounds(int length, char* data);
-  bool kernelConnectWorkArounds(char* data, int length);
-  void setConnectionParameters(unsigned short connMinInterval, unsigned short connMaxInterval, unsigned short connLatency, unsigned short supervisionTimeout);
 
   static void PollCloseCallback(uv_poll_t* handle);
   static void PollCallback(uv_poll_t* handle, int status, int events);
@@ -98,15 +123,7 @@ private:
 private:
   Nan::Persistent<v8::Object> This;
 
-  int _mode;
-  int _socket;
-  int _devId;
   uv_poll_t _pollHandle;
-  uint8_t _address[6];
-  uint8_t _addressType;
-  std::map<bdaddr_t, std::weak_ptr<BluetoothHciL2Socket>> _l2sockets_connected;
-  std::map<bdaddr_t, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_connecting;
-  std::map<unsigned short, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_handles;
 
   static Nan::Persistent<v8::FunctionTemplate> constructor_template;
 };
