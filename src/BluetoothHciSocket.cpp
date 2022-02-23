@@ -347,37 +347,38 @@ void BluetoothHciSocket::poll() {
   int length = 0;
   char data[1024];
 
-  length = read(this->_communicator->_socket, data, sizeof(data));
-  if (length < 0) {
-    if (errno != EAGAIN && errno != EINTR) {
-      this->emitErrnoError("read");
+  do {
+    length = read(this->_communicator->_socket, data, sizeof(data));
+    if (length < 0) {
+      if (errno != EAGAIN && errno != EINTR) {
+        this->emitErrnoError("read");
+      }
+      return;
     }
-    return;
-  }
 
-  Nan::AsyncResource res("BluetoothHciSocket::poll");
+    Nan::AsyncResource res("BluetoothHciSocket::poll");
 
-  Local<Value> argv[2] = {
-    Nan::New("predata").ToLocalChecked(),
-    Nan::CopyBuffer(data, length).ToLocalChecked()
-  };
+    Local<Value> argv[2] = {
+      Nan::New("predata").ToLocalChecked(),
+      Nan::CopyBuffer(data, length).ToLocalChecked()
+    };
 
-  if (length > 0 && this->_communicator->_mode == HCI_CHANNEL_RAW) {
+    auto nThis = Nan::New<Object>(this->This);
+    auto nEmit = Nan::New("emit").ToLocalChecked();
+
+    if (length > 0 && this->_communicator->_mode == HCI_CHANNEL_RAW) {
+      res.runInAsyncScope(
+        nThis, nEmit, 2,
+        argv
+      ).FromMaybe(v8::Local<v8::Value>());
+    }
+
+    argv[0] = Nan::New("data").ToLocalChecked();
     res.runInAsyncScope(
-      Nan::New<Object>(this->This),
-      Nan::New("emit").ToLocalChecked(),
-      2,
+      nThis, nEmit, 2,
       argv
     ).FromMaybe(v8::Local<v8::Value>());
-  }
-
-  argv[0] = Nan::New("data").ToLocalChecked();
-  res.runInAsyncScope(
-    Nan::New<Object>(this->This),
-    Nan::New("emit").ToLocalChecked(),
-    2,
-    argv
-  ).FromMaybe(v8::Local<v8::Value>());
+  } while(true);
 }
 
 void BluetoothHciSocket::stop() {
@@ -851,10 +852,16 @@ NAN_METHOD(BluetoothHciSocket::KernelDisconnectWorkArounds){
     Local<Value> arg0 = info[0];
     if (arg0->IsObject()) {
       Local<Function> callback = info[1].As<Function>();
+      int length = node::Buffer::Length(arg0);
       Nan::Callback* nanCallback = new Nan::Callback(callback);
-      
-      BluetoothDisconnectWorker* worker = new BluetoothDisconnectWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), node::Buffer::Length(arg0));
-      Nan::AsyncQueueWorker(worker);
+
+      if(length == 22 || length == 7){       
+        BluetoothDisconnectWorker* worker = new BluetoothDisconnectWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), length);
+        Nan::AsyncQueueWorker(worker);
+      }else{
+        nanCallback->Call(0, 0);
+        delete nanCallback;
+      }
     }
   }
 
