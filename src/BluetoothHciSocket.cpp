@@ -135,6 +135,7 @@ BluetoothHciSocket::BluetoothHciSocket():
   _pollHandle(),
   _communicator(new BluetoothCommunicator())
   {
+  int zero = 0;
 
   int fd = socket(AF_BLUETOOTH, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI);
   if (fd == -1) {
@@ -142,6 +143,12 @@ BluetoothHciSocket::BluetoothHciSocket():
     return;
   }
   
+  
+  if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &zero, sizeof(zero)) < 0) {
+    Nan::ThrowError(Nan::ErrnoException(errno, "setsockopt"));
+    return;
+  }
+
   this->_communicator->_socket = fd;
 
   if (uv_poll_init(uv_default_loop(), &this->_pollHandle, this->_communicator->_socket) < 0) {
@@ -513,13 +520,13 @@ void BluetoothCommunicator::setConnectionParameters(
     char command[128];
 
     // override the HCI devices connection parameters using debugfs
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_min_interval", connMinInterval, this->_devId);
+    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_min_interval &", connMinInterval, this->_devId);
     system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_max_interval", connMaxInterval, this->_devId);
+    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_max_interval &", connMaxInterval, this->_devId);
     system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_latency", connLatency, this->_devId);
+    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_latency &", connLatency, this->_devId);
     system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/supervision_timeout", supervisionTimeout, this->_devId);
+    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/supervision_timeout &", supervisionTimeout, this->_devId);
     system(command);
 }
 
