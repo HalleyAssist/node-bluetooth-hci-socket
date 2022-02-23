@@ -114,29 +114,44 @@ NAN_MODULE_INIT(BluetoothHciSocket::Init) {
   Nan::SetPrototypeMethod(tmpl, "setFilter", SetFilter);
   Nan::SetPrototypeMethod(tmpl, "stop", Stop);
   Nan::SetPrototypeMethod(tmpl, "write", Write);
+  Nan::SetPrototypeMethod(tmpl, "kernelDisconnectWorkArounds", KernelDisconnectWorkArounds);
   Nan::SetPrototypeMethod(tmpl, "cleanup", Cleanup);
 
   Nan::Set(target, Nan::New("BluetoothHciSocket").ToLocalChecked(), Nan::GetFunction(tmpl).ToLocalChecked());
 }
 
-BluetoothHciSocket::BluetoothHciSocket() :
-  node::ObjectWrap(),
-  _mode(0),
+BluetoothCommunicator::BluetoothCommunicator() :
   _socket(-1),
+  _mode(0),
   _devId(0),
-  _pollHandle(),
   _address(),
   _addressType(0)
+{
+
+}
+
+BluetoothHciSocket::BluetoothHciSocket():
+  node::ObjectWrap(),
+  _pollHandle(),
+  _communicator(new BluetoothCommunicator())
   {
+  int zero = 0;
 
   int fd = socket(AF_BLUETOOTH, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI);
   if (fd == -1) {
     Nan::ThrowError(Nan::ErrnoException(errno, "socket"));
     return;
   }
-  this->_socket = fd;
+  
+  
+  if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &zero, sizeof(zero)) < 0) {
+    Nan::ThrowError(Nan::ErrnoException(errno, "setsockopt"));
+    return;
+  }
 
-  if (uv_poll_init(uv_default_loop(), &this->_pollHandle, this->_socket) < 0) {
+  this->_communicator->_socket = fd;
+
+  if (uv_poll_init(uv_default_loop(), &this->_pollHandle, this->_communicator->_socket) < 0) {
     Nan::ThrowError("uv_poll_init failed");
     return;
   }
@@ -147,7 +162,7 @@ BluetoothHciSocket::BluetoothHciSocket() :
 BluetoothHciSocket::~BluetoothHciSocket() {
   uv_close((uv_handle_t*)&this->_pollHandle, (uv_close_cb)BluetoothHciSocket::PollCloseCallback);
 
-  close(this->_socket);
+  close(this->_communicator->_socket);
 }
 
 void BluetoothHciL2Socket::connect(){
@@ -188,7 +203,7 @@ bool BluetoothHciL2Socket::connected() const {
   return this->_socket != -1;
 }
 
-BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothHciSocket* parent, unsigned char* srcaddr, char srcType, char* bdaddr, char bdaddrType, uint64_t expires): _parent(parent), _expires(expires), l2_src({}), l2_dst({}) {
+BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char* srcaddr, char srcType, char* bdaddr, char bdaddrType, uint64_t expires): _parent(parent), _expires(expires), l2_src({}), l2_dst({}) {
     unsigned short l2cid;
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -214,12 +229,18 @@ BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothHciSocket* parent, unsigned 
     connect();
 }
 
+void BluetoothHciSocket::cleanup_l2(bdaddr_t addr){
+  _communicator->cleanup_l2(addr);
+}
+
+void BluetoothCommunicator::cleanup_l2(bdaddr_t addr){
+  _l2sockets_connected.erase(addr);
+}
 
 BluetoothHciL2Socket::~BluetoothHciL2Socket(){
-  puts("Closing L2 socket");
   if(this->_socket != -1) disconnect();
   if(_expires == 0){
-    this->_parent->_l2sockets_connected.erase(l2_dst.l2_bdaddr);
+    this->_parent->cleanup_l2(l2_dst.l2_bdaddr);
   }
 }
 
@@ -238,31 +259,31 @@ int BluetoothHciSocket::bindRaw(int* devId) {
   a.hci_dev = this->devIdFor(devId, true);
   a.hci_channel = HCI_CHANNEL_RAW;
 
-  this->_devId = a.hci_dev;
-  this->_mode = HCI_CHANNEL_RAW;
+  this->_communicator->_devId = a.hci_dev;
+  this->_communicator->_mode = HCI_CHANNEL_RAW;
 
-  if (bind(this->_socket, (struct sockaddr *) &a, sizeof(a)) < 0) {
+  if (bind(this->_communicator->_socket, (struct sockaddr *) &a, sizeof(a)) < 0) {
     Nan::ThrowError(Nan::ErrnoException(errno, "bind"));
     return -1;
   }
 
   // get the local address and address type
   memset(&di, 0x00, sizeof(di));
-  di.dev_id = this->_devId;
-  memset(_address, 0, sizeof(_address));
-  _addressType = 0;
+  di.dev_id = this->_communicator->_devId;
+  memset(this->_communicator->_address, 0, sizeof(this->_communicator->_address));
+  this->_communicator->_addressType = 0;
 
-  if (ioctl(this->_socket, HCIGETDEVINFO, (void *)&di) > -1) {
-    memcpy(_address, &di.bdaddr, sizeof(di.bdaddr));
-    _addressType = di.type;
+  if (ioctl(this->_communicator->_socket, HCIGETDEVINFO, (void *)&di) > -1) {
+    memcpy(this->_communicator->_address, &di.bdaddr, sizeof(di.bdaddr));
+    this->_communicator->_addressType = di.type;
 
-    if (_addressType == 3) {
+    if (this->_communicator->_addressType == 3) {
       // 3 is a weird type, use 1 (public) instead
-      _addressType = 1;
+      this->_communicator->_addressType = 1;
     }
   }
 
-  return this->_devId;
+  return this->_communicator->_devId;
 }
 
 int BluetoothHciSocket::bindUser(int* devId) {
@@ -273,15 +294,15 @@ int BluetoothHciSocket::bindUser(int* devId) {
   a.hci_dev = this->devIdFor(devId, false);
   a.hci_channel = HCI_CHANNEL_USER;
 
-  this->_devId = a.hci_dev;
-  this->_mode = HCI_CHANNEL_USER;
+  this->_communicator->_devId = a.hci_dev;
+  this->_communicator->_mode = HCI_CHANNEL_USER;
 
-  if (bind(this->_socket, (struct sockaddr *) &a, sizeof(a)) < 0) {
+  if (bind(this->_communicator->_socket, (struct sockaddr *) &a, sizeof(a)) < 0) {
     Nan::ThrowError(Nan::ErrnoException(errno, "bind"));
     return -1;
   }
 
-  return this->_devId;
+  return this->_communicator->_devId;
 }
 
 void BluetoothHciSocket::bindControl() {
@@ -292,9 +313,9 @@ void BluetoothHciSocket::bindControl() {
   a.hci_dev = HCI_DEV_NONE;
   a.hci_channel = HCI_CHANNEL_CONTROL;
 
-  this->_mode = HCI_CHANNEL_CONTROL;
+  this->_communicator->_mode = HCI_CHANNEL_CONTROL;
 
-  if (bind(this->_socket, (struct sockaddr *) &a, sizeof(a)) < 0) {
+  if (bind(this->_communicator->_socket, (struct sockaddr *) &a, sizeof(a)) < 0) {
     Nan::ThrowError(Nan::ErrnoException(errno, "bind"));
     return;
   }
@@ -305,9 +326,9 @@ bool BluetoothHciSocket::isDevUp() {
   bool isUp = false;
 
   memset(&di, 0x00, sizeof(di));
-  di.dev_id = this->_devId;
+  di.dev_id = this->_communicator->_devId;
 
-  if (ioctl(this->_socket, HCIGETDEVINFO, (void *)&di) > -1) {
+  if (ioctl(this->_communicator->_socket, HCIGETDEVINFO, (void *)&di) > -1) {
     isUp = (di.flags & (1 << HCI_UP)) != 0;
   }
 
@@ -315,7 +336,7 @@ bool BluetoothHciSocket::isDevUp() {
 }
 
 void BluetoothHciSocket::setFilter(char* data, int length) {
-  if (setsockopt(this->_socket, SOL_HCI, HCI_FILTER, data, length) < 0) {
+  if (setsockopt(this->_communicator->_socket, SOL_HCI, HCI_FILTER, data, length) < 0) {
     this->emitErrnoError("setsockopt");
   }
 }
@@ -326,41 +347,54 @@ void BluetoothHciSocket::poll() {
   int length = 0;
   char data[1024];
 
-  length = read(this->_socket, data, sizeof(data));
-
-  if (length > 0) {
-    if (this->_mode == HCI_CHANNEL_RAW) {
-      // TODO: This does not check for the retval of this function – should it?
-      this->kernelDisconnectWorkArounds(length, data);
+  do {
+    length = read(this->_communicator->_socket, data, sizeof(data));
+    if (length < 0) {
+      if (errno != EAGAIN && errno != EINTR) {
+        this->emitErrnoError("read");
+      }
+      return;
     }
 
+    Nan::AsyncResource res("BluetoothHciSocket::poll");
+
     Local<Value> argv[2] = {
-      Nan::New("data").ToLocalChecked(),
+      Nan::New("predata").ToLocalChecked(),
       Nan::CopyBuffer(data, length).ToLocalChecked()
     };
 
-    Nan::AsyncResource res("BluetoothHciSocket::poll");
+    auto nThis = Nan::New<Object>(this->This);
+    auto nEmit = Nan::New("emit").ToLocalChecked();
+
+    if (length > 0 && this->_communicator->_mode == HCI_CHANNEL_RAW) {
+      res.runInAsyncScope(
+        nThis, nEmit, 2,
+        argv
+      ).FromMaybe(v8::Local<v8::Value>());
+    }
+
+    argv[0] = Nan::New("data").ToLocalChecked();
     res.runInAsyncScope(
-      Nan::New<Object>(this->This),
-      Nan::New("emit").ToLocalChecked(),
-      2,
+      nThis, nEmit, 2,
       argv
     ).FromMaybe(v8::Local<v8::Value>());
-  }
+  } while(true);
 }
 
 void BluetoothHciSocket::stop() {
   uv_poll_stop(&this->_pollHandle);
 }
 
-void BluetoothHciSocket::write_(char* data, int length) {
+bool BluetoothCommunicator::write(char* data, int length) {
   if (this->_mode == HCI_CHANNEL_RAW && this->kernelConnectWorkArounds(data, length)) {
-    return;
+    return true;
   }
 
-  if (write(this->_socket, data, length) < 0) {
-    this->emitErrnoError("write");
+  if (::write(this->_socket, data, length) < 0) {
+    return false;
   }
+
+  return true;
 }
 
 void BluetoothHciSocket::emitErrnoError(const char *syscall) {
@@ -391,7 +425,7 @@ int BluetoothHciSocket::devIdFor(const int* pDevId, bool isUp) {
 
     dl->dev_num = HCI_MAX_DEV;
 
-    if (ioctl(this->_socket, HCIGETDEVLIST, dl) > -1) {
+    if (ioctl(this->_communicator->_socket, HCIGETDEVLIST, dl) > -1) {
       for (int i = 0; i < dl->dev_num; i++, dr++) {
         bool devUp = dr->dev_opt & (1 << HCI_UP);
         bool match = (isUp == devUp);
@@ -413,7 +447,11 @@ int BluetoothHciSocket::devIdFor(const int* pDevId, bool isUp) {
   return devId;
 }
 
-int BluetoothHciSocket::kernelDisconnectWorkArounds(int length, char* data) {
+int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
+  if (this->_mode != HCI_CHANNEL_RAW) {
+    return 0;
+  }
+
   // HCI Event - LE Meta Event - LE Connection Complete => manually create L2CAP socket to force kernel to book keep
   // this socket will be closed immediately.
 
@@ -474,7 +512,7 @@ int BluetoothHciSocket::kernelDisconnectWorkArounds(int length, char* data) {
   return 0;
 }
 
-void BluetoothHciSocket::setConnectionParameters(
+void BluetoothCommunicator::setConnectionParameters(
     unsigned short connMinInterval,
     unsigned short connMaxInterval,
     unsigned short connLatency,
@@ -483,18 +521,18 @@ void BluetoothHciSocket::setConnectionParameters(
     char command[128];
 
     // override the HCI devices connection parameters using debugfs
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_min_interval", connMinInterval, this->_devId);
+    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_min_interval &", connMinInterval, this->_devId);
     system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_max_interval", connMaxInterval, this->_devId);
+    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_max_interval &", connMaxInterval, this->_devId);
     system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_latency", connLatency, this->_devId);
+    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_latency &", connLatency, this->_devId);
     system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/supervision_timeout", supervisionTimeout, this->_devId);
+    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/supervision_timeout &", supervisionTimeout, this->_devId);
     system(command);
 }
 
 
-bool BluetoothHciSocket::kernelConnectWorkArounds(char* data, int length)
+bool BluetoothCommunicator::kernelConnectWorkArounds(char* data, int length)
 {
   // if statement:
   // data[0]: HCI_COMMAND_PKT
@@ -548,21 +586,97 @@ bool BluetoothHciSocket::kernelConnectWorkArounds(char* data, int length)
   return false;
 }
 
-NAN_METHOD(BluetoothHciSocket::Cleanup) {
-  BluetoothHciSocket* p = node::ObjectWrap::Unwrap<BluetoothHciSocket>(info.This());
+class BluetoothCleanupWorker : public Nan::AsyncWorker {
+ public:
+  // Constructor
+  BluetoothCleanupWorker(Nan::Callback *callback, std::shared_ptr<BluetoothCommunicator> socket)
+    : AsyncWorker(callback, "BluetoothCleanupWorker"), _socket(socket) {}
+  // Destructor
+  ~BluetoothCleanupWorker() {}
+
+  // Executed inside the worker-thread.
+  // It is not safe to access V8, or V8 data structures
+  // here, so everything we need for input and output
+  // should go on `this`.
+  void Execute () {
+    this->_socket->cleanup();
+  }
+
+ private:
+  std::shared_ptr<BluetoothCommunicator> _socket;
+};
+
+class BluetoothWriteWorker : public Nan::AsyncWorker {
+ public:
+  // Constructor
+  BluetoothWriteWorker(Nan::Callback *callback, std::shared_ptr<BluetoothCommunicator> socket, char* data, int length)
+    : AsyncWorker(callback, "BluetoothWriteWorker"), _socket(socket), _data(data), _length(length) {}
+  // Destructor
+  ~BluetoothWriteWorker() {}
+
+  // Executed inside the worker-thread.
+  // It is not safe to access V8, or V8 data structures
+  // here, so everything we need for input and output
+  // should go on `this`.
+  void Execute () {
+    if(!this->_socket->write(_data, _length)){
+      SetErrorMessage("write");
+    }
+  }
+
+ private:
+  std::shared_ptr<BluetoothCommunicator> _socket;
+  char* _data;
+  int _length;
+};
+
+
+class BluetoothDisconnectWorker : public Nan::AsyncWorker {
+ public:
+  // Constructor
+  BluetoothDisconnectWorker(Nan::Callback *callback, std::shared_ptr<BluetoothCommunicator> socket, char* data, int length)
+    : AsyncWorker(callback, "BluetoothWriteWorker"), _socket(socket), _data(data), _length(length) {}
+  // Destructor
+  ~BluetoothDisconnectWorker() {}
+
+  // Executed inside the worker-thread.
+  // It is not safe to access V8, or V8 data structures
+  // here, so everything we need for input and output
+  // should go on `this`.
+  void Execute () {
+    this->_socket->kernelDisconnectWorkArounds(_data, _length);
+  }
+
+ private:
+  std::shared_ptr<BluetoothCommunicator> _socket;
+  char* _data;
+  int _length;
+};
+
+void BluetoothCommunicator::cleanup(){
   auto now = uv_hrtime();
 
-  for (auto it = p->_l2sockets_connecting.cbegin(); it != p->_l2sockets_connecting.cend() /* not hoisted */; /* no increment */)
+  for (auto it = this->_l2sockets_connecting.cbegin(); it != this->_l2sockets_connecting.cend() /* not hoisted */; /* no increment */)
   {
     if (now < it->second->expires())
     {
-      p->_l2sockets_connecting.erase(it++);    // or "it = m.erase(it)" since C++11
+      this->_l2sockets_connecting.erase(it++);    // or "it = m.erase(it)" since C++11
     }
     else
     {
       ++it;
     }
   }
+}
+
+NAN_METHOD(BluetoothHciSocket::Cleanup) {
+  BluetoothHciSocket* p = node::ObjectWrap::Unwrap<BluetoothHciSocket>(info.This());
+  
+  Local<Function> callback = info[0].As<Function>();
+  Nan::Callback* nanCallback = new Nan::Callback(callback);
+
+  BluetoothCleanupWorker* worker = new BluetoothCleanupWorker(nanCallback, p->_communicator);
+  Nan::AsyncQueueWorker(worker);
 }
 
 NAN_METHOD(BluetoothHciSocket::New) {
@@ -663,7 +777,7 @@ NAN_METHOD(BluetoothHciSocket::GetDeviceList) {
 
   Local<Array> deviceList = Nan::New<v8::Array>();
 
-  if (ioctl(p->_socket, HCIGETDEVLIST, dl) > -1) {
+  if (ioctl(p->_communicator->_socket, HCIGETDEVLIST, dl) > -1) {
     int di = 0;
     for (int i = 0; i < dl->dev_num; i++, dr++) {
       uint16_t devId = dr->dev_id;
@@ -716,17 +830,43 @@ NAN_METHOD(BluetoothHciSocket::Write) {
   Nan::HandleScope scope;
   BluetoothHciSocket* p = node::ObjectWrap::Unwrap<BluetoothHciSocket>(info.This());
 
-  if (info.Length() > 0) {
+  if (info.Length() >= 2) {
     Local<Value> arg0 = info[0];
     if (arg0->IsObject()) {
+      Local<Function> callback = info[1].As<Function>();
+      Nan::Callback* nanCallback = new Nan::Callback(callback);
 
-      p->write_(node::Buffer::Data(arg0), node::Buffer::Length(arg0));
+      BluetoothWriteWorker* worker = new BluetoothWriteWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), node::Buffer::Length(arg0));
+      Nan::AsyncQueueWorker(worker);
     }
   }
 
   info.GetReturnValue().SetUndefined();
 }
 
+NAN_METHOD(BluetoothHciSocket::KernelDisconnectWorkArounds){
+  Nan::HandleScope scope;
+  BluetoothHciSocket* p = node::ObjectWrap::Unwrap<BluetoothHciSocket>(info.This());
+
+  if (info.Length() >= 2) {
+    Local<Value> arg0 = info[0];
+    if (arg0->IsObject()) {
+      Local<Function> callback = info[1].As<Function>();
+      int length = node::Buffer::Length(arg0);
+      Nan::Callback* nanCallback = new Nan::Callback(callback);
+
+      if(length == 22 || length == 7){       
+        BluetoothDisconnectWorker* worker = new BluetoothDisconnectWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), length);
+        Nan::AsyncQueueWorker(worker);
+      }else{
+        nanCallback->Call(0, 0);
+        delete nanCallback;
+      }
+    }
+  }
+
+  info.GetReturnValue().SetUndefined();
+}
 
 void BluetoothHciSocket::PollCloseCallback(uv_poll_t* handle) {
   delete handle;
