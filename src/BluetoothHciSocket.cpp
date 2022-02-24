@@ -358,26 +358,19 @@ void BluetoothHciSocket::poll() {
 
     Nan::AsyncResource res("BluetoothHciSocket::poll");
 
-    Local<Value> argv[2] = {
-      Nan::New("predata").ToLocalChecked(),
+    Local<Value> argv[1] = {
       Nan::CopyBuffer(data, length).ToLocalChecked()
     };
 
     auto nThis = Nan::New<Object>(this->This);
-    auto nEmit = Nan::New("emit").ToLocalChecked();
+    auto nEmit = Nan::New("_emitData").ToLocalChecked();
 
-    if (length > 0 && this->_communicator->_mode == HCI_CHANNEL_RAW) {
+    if (length > 0) {
       res.runInAsyncScope(
-        nThis, nEmit, 2,
+        nThis, nEmit, 1,
         argv
       ).FromMaybe(v8::Local<v8::Value>());
     }
-
-    argv[0] = Nan::New("data").ToLocalChecked();
-    res.runInAsyncScope(
-      nThis, nEmit, 2,
-      argv
-    ).FromMaybe(v8::Local<v8::Value>());
   } while(true);
 }
 
