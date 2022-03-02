@@ -505,25 +505,6 @@ int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
   return 0;
 }
 
-void BluetoothCommunicator::setConnectionParameters(
-    unsigned short connMinInterval,
-    unsigned short connMaxInterval,
-    unsigned short connLatency,
-    unsigned short supervisionTimeout
-){
-    char command[128];
-
-    // override the HCI devices connection parameters using debugfs
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_min_interval &", connMinInterval, this->_devId);
-    system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_max_interval &", connMaxInterval, this->_devId);
-    system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/conn_latency &", connLatency, this->_devId);
-    system(command);
-    sprintf(command, "echo %u > /sys/kernel/debug/bluetooth/hci%d/supervision_timeout &", supervisionTimeout, this->_devId);
-    system(command);
-}
-
 
 bool BluetoothCommunicator::kernelConnectWorkArounds(char* data, int length)
 {
@@ -546,8 +527,6 @@ bool BluetoothCommunicator::kernelConnectWorkArounds(char* data, int length)
     connMaxInterval = (data[20] << 8) | data[19];
     connLatency = (data[22] << 8) | data[21];
     supervisionTimeout = (data[24] << 8) | data[23];
-
-    this->setConnectionParameters(connMinInterval, connMaxInterval, connLatency, supervisionTimeout);
 
     std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
     if(this->_l2sockets_connected.find(*(bdaddr_t*)&data[10]) != this->_l2sockets_connected.end()){

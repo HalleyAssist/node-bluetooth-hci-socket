@@ -75,7 +75,6 @@ private:
   std::map<unsigned short, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_handles;
 
   bool kernelConnectWorkArounds(char* data, int length);
-  void setConnectionParameters(unsigned short connMinInterval, unsigned short connMaxInterval, unsigned short connLatency, unsigned short supervisionTimeout);
 };
 
 class BluetoothHciSocket : public node::ObjectWrap {
