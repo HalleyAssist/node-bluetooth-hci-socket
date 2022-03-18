@@ -203,7 +203,7 @@ bool BluetoothHciL2Socket::connected() const {
   return this->_socket != -1;
 }
 
-BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char* srcaddr, char srcType, char* bdaddr, char bdaddrType, uint64_t expires): _parent(parent), _expires(expires), l2_src({}), l2_dst({}) {
+BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char* srcaddr, char srcType, bdaddr_t bdaddr, char bdaddrType, uint64_t expires): _parent(parent), _expires(expires), l2_src({}), l2_dst({}) {
     unsigned short l2cid;
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -222,7 +222,7 @@ BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsign
       
     memset(&l2_dst, 0, sizeof(l2_dst));
     l2_dst.l2_family = AF_BLUETOOTH;
-    memcpy(&l2_dst.l2_bdaddr, bdaddr, sizeof(l2_dst.l2_bdaddr));
+    memcpy(&l2_dst.l2_bdaddr, &bdaddr, sizeof(l2_dst.l2_bdaddr));
     l2_dst.l2_cid = l2cid;
     l2_dst.l2_bdaddr_type = bdaddrType; // BDADDR_LE_PUBLIC (0x01), BDADDR_LE_RANDOM (0x02)
 
@@ -440,13 +440,54 @@ int BluetoothHciSocket::devIdFor(const int* pDevId, bool isUp) {
   return devId;
 }
 
+
+
+bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdaddr_t addr, char addrType){
+  //printf("HCI_EV_LE_CONN_COMPLETE for handle %d\n", handle);
+
+  std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
+
+  auto it = _l2sockets_connected.find(addr);
+  if(it != _l2sockets_connected.end()){
+    l2socket_ptr = it->second.lock();
+  } else {
+    auto it2 = _l2sockets_connecting.find(addr);
+
+    if(it2 != _l2sockets_connecting.end()){
+      //successful connection (we have a handle for the socket!)
+      l2socket_ptr = it2->second;
+      l2socket_ptr->expires(0);
+      _l2sockets_connecting.erase(it2);
+    } else {
+      l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, 0);
+      if(!l2socket_ptr->connected()){
+        //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected\n", data[9], data[10], data[11], data[12], data[13], data[14],  handle);
+        return false;
+      }
+      this->_l2sockets_connected[addr] = l2socket_ptr;
+    }
+  }
+
+    
+  if(!l2socket_ptr->connected()){
+    //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected (2)\n", data[9], data[10], data[11], data[12], data[13], data[14], handle);
+    return false;
+  }
+
+  
+  this->_l2sockets_handles[handle] = l2socket_ptr;
+
+  return true;
+}
+
+
 int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
-  if (this->_mode != HCI_CHANNEL_RAW) {
+  if (this->_mode != HCI_CHANNEL_RAW || data[0] != 0x04) {
     return 0;
   }
 
   // HCI Event - LE Meta Event - LE Connection Complete => manually create L2CAP socket to force kernel to book keep
-  // this socket will be closed immediately.
+  // this socket will be closed on disconnection
 
   // The if statement:
   // data[0] = LE Meta Event (HCI_EVENT_PKT)
@@ -457,102 +498,89 @@ int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
   // data[5,6] = handle (little endian)
   // data[7] = role (0x00 = Master)
   // data[9,]  = device bt address
-  if (length == 22 && data[0] == 0x04 && data[1] == 0x3e && data[2] == 0x13 && data[3] == 0x01 && data[4] == 0x00) { //  && data[7] == 0x01
+  if (length == 22 && data[1] == 0x3e && data[2] == 0x13 && data[3] == 0x01 && data[4] == 0x00) { //  && data[7] == 0x01
     unsigned short handle = *((unsigned short*)(&data[5]));
-    //printf("HCI_EV_LE_CONN_COMPLETE for handle %d\n", handle);
-
-    std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
-
-    auto it = _l2sockets_connected.find(*(bdaddr_t*)&data[9]);
-    if(it != _l2sockets_connected.end()){
-      l2socket_ptr = it->second.lock();
-    } else {
-      auto it2 = _l2sockets_connecting.find(*(bdaddr_t*)&data[9]);
-
-      if(it2 != _l2sockets_connecting.end()){
-        //successful connection (we have a handle for the socket!)
-        l2socket_ptr = it2->second;
-        l2socket_ptr->expires(0);
-        _l2sockets_connecting.erase(it2);
-      } else {
-        l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, &data[9], data[8] + 1, 0);
-        if(!l2socket_ptr->connected()){
-          //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected\n", data[9], data[10], data[11], data[12], data[13], data[14],  handle);
-          return 0;
-        }
-        this->_l2sockets_connected[*(bdaddr_t*)&data[9]] = l2socket_ptr;
-      }
+    if(handle == 0) {
+      return 0;
     }
-
-      
-    if(!l2socket_ptr->connected()){
-      //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected (2)\n", data[9], data[10], data[11], data[12], data[13], data[14], handle);
+    if(!this->handleConnectionComplete(handle, *(bdaddr_t*)&data[9], data[8] + 1)){
+      return 0;
+    }
+  } else if (length == 7 && data[1] == 0x05 && data[2] == 0x04 && data[3] == 0x00) {
+    
+    // HCI Event - Disconn Complete =======================> close socket from above
+    unsigned short handle = *((unsigned short*)(&data[5]));
+    if(handle == 0) {
+      return 0;
+    }
+    //printf("Disconn Complete for handle %d (%d)\n", handle, this->_l2sockets_handles.count(handle));
+    this->_l2sockets_handles.erase(handle);
+  } else if(length == 34 && data[1] == 0x3e && data[3] == 0x0a && data[4] == 0x00){
+    // 04 3e 1f 0a 00 10 00 00 00 67 c3 2e 6f 7c b8 00 00 00 00 00 00 00 00 00 00 00 00 24 00 00 00 2a 00 00
+    unsigned short handle = *((unsigned short*)(&data[5]));
+    if(handle == 0) {
       return 0;
     }
 
-    
-    handle = handle % 256;
-    this->_l2sockets_handles[handle] = l2socket_ptr;
-  } else if (length == 7 && data[0] == 0x04 && data[1] == 0x05 && data[2] == 0x04 && data[3] == 0x00) {
-    
-    // HCI Event - Disconn Complete =======================> close socket from above
-    unsigned short handle = *((unsigned short*)(&data[4]));
-    //printf("Disconn Complete for handle %d (%d)\n", handle, this->_l2sockets_handles.count(handle));
-    handle = handle % 256;
-    this->_l2sockets_handles.erase(handle);
+    if(!this->handleConnectionComplete(handle, *(bdaddr_t*)&data[9], data[8] + 1)){
+      return 0;
+    }
   }
+
+  // TODO: Enhanced CONNECTION_COMPLETE event
 
   return 0;
 }
 
+bool BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType){
+  std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
+  if(this->_l2sockets_connected.find(addr) != this->_l2sockets_connected.end()){
+    // we are refreshing the connection (which was connected)
+    l2socket_ptr = this->_l2sockets_connected[addr].lock();
+    l2socket_ptr->disconnect();
+    l2socket_ptr->connect();
+    // no expiration as we will continue to be "connected" on the other handle which must exist
+  } else if(this->_l2sockets_connecting.find(addr) != this->_l2sockets_connecting.end()){
+    // we were connecting but now we connect again
+    l2socket_ptr = this->_l2sockets_connecting[addr];
+    l2socket_ptr->disconnect();
+    l2socket_ptr->connect();
+    l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
+  } else{    
+    // 60000000000  = 1 minute
+    l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, uv_hrtime() + L2_CONNECT_TIMEOUT);
+    if(!l2socket_ptr->connected()){
+      return false;
+    }
+    this->_l2sockets_connecting[addr] = l2socket_ptr;
+  }
+
+
+    // returns true to skip sending the kernel this commoand
+    // the command will instead be sent by the connect() operation
+  return true;
+}
+
 
 bool BluetoothCommunicator::kernelConnectWorkArounds(char* data, int length)
-{
+{  
+  // if statement:
+  // data[0]: HCI_COMMAND_PKT
+  // data[1,2]: HCI_OP_LE_ENH_CREATE_CONN (0x2043)
+  // data[3]: plen
+  // data[8 ...] payload
+  if (length > 14 && data[0] == 0x01 && data[1] == 0x43 && data[2] == 0x20) {
+    return this-handleConnecting(*(bdaddr_t*)&data[7], data[6]+1);
+  }
+
   // if statement:
   // data[0]: HCI_COMMAND_PKT
   // data[1,2]: HCI_OP_LE_CREATE_CONN (0x200d)
   // data[3]: plen
-  // data[10 ...] bdaddr
+  // data[10 ...] addr
 
   if (length == 29 && data[0] == 0x01 && data[1] == 0x0d && data[2] == 0x20 && data[3] == 0x19) {
-    unsigned short connMinInterval;
-    unsigned short connMaxInterval;
-    unsigned short connLatency;
-    unsigned short supervisionTimeout;
-
-    //printf("HCI_OP_LE_CREATE_CONN %02x:%02x:%02x:%02x:%02x:%02x\n", data[10], data[11], data[12], data[13], data[14], data[15]);
-
-    // extract the connection parameter
-    connMinInterval = (data[18] << 8) | data[17];
-    connMaxInterval = (data[20] << 8) | data[19];
-    connLatency = (data[22] << 8) | data[21];
-    supervisionTimeout = (data[24] << 8) | data[23];
-
-    std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
-    if(this->_l2sockets_connected.find(*(bdaddr_t*)&data[10]) != this->_l2sockets_connected.end()){
-      // we are refreshing the connection (which was connected)
-      l2socket_ptr = this->_l2sockets_connected[*(bdaddr_t*)&data[10]].lock();
-      l2socket_ptr->disconnect();
-      l2socket_ptr->connect();
-      // no expiration as we will continue to be "connected" on the other handle which must exist
-    } else if(this->_l2sockets_connecting.find(*(bdaddr_t*)&data[10]) != this->_l2sockets_connecting.end()){
-      // we were connecting but now we connect again
-      l2socket_ptr = this->_l2sockets_connecting[*(bdaddr_t*)&data[10]];
-      l2socket_ptr->disconnect();
-      l2socket_ptr->connect();
-      l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
-    } else{    
-      // 60000000000  = 1 minute
-      l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, &data[10], data[9] + 1, uv_hrtime() + L2_CONNECT_TIMEOUT);
-      if(!l2socket_ptr->connected()){
-        return false;
-      }
-      this->_l2sockets_connecting[*(bdaddr_t*)&data[10]] = l2socket_ptr;
-    }
-
-    // returns true to skip sending the kernel this commoand
-    // the command will instead be sent by the connect() operation
-    return true;
+    return this-handleConnecting(*(bdaddr_t*)&data[10], data[9]+1);
   }
 
   return false;

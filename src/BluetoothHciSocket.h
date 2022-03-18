@@ -37,7 +37,7 @@ class BluetoothCommunicator;
 
 class BluetoothHciL2Socket {
   public:
-  BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char*, char, char*, char, uint64_t expires);
+  BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char*, char, bdaddr_t, char, uint64_t expires);
   ~BluetoothHciL2Socket();
   void disconnect();
   void connect();
@@ -75,6 +75,8 @@ private:
   std::map<unsigned short, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_handles;
 
   bool kernelConnectWorkArounds(char* data, int length);
+  bool handleConnecting(bdaddr_t addr, char addrType);
+  bool handleConnectionComplete(unsigned short handle, bdaddr_t addr, char addrType);
 };
 
 class BluetoothHciSocket : public node::ObjectWrap {
