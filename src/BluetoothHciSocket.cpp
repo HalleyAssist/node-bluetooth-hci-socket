@@ -509,7 +509,8 @@ int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
   } else if (length == 7 && data[1] == 0x05 && data[2] == 0x04 && data[3] == 0x00) {
     
     // HCI Event - Disconn Complete =======================> close socket from above
-    unsigned short handle = *((unsigned short*)(&data[5]));
+    // This uses handle, response (so handle is at offset 4)
+    unsigned short handle = *((unsigned short*)(&data[4]));
     if(handle == 0) {
       return 0;
     }
