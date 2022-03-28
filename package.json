@@ -31,9 +31,6 @@
     "debug": "^4.3.2",
     "nan": "^2.15.0"
   },
-  "optionalDependencies": {
-    "usb": "^1.7.2"
-  },
   "devDependencies": {
     "jshint": "^2.13.1"
   },
