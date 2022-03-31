@@ -44,7 +44,7 @@ class BluetoothHciL2Socket {
   void expires(uint64_t expires);
   uint64_t expires() const;
   bool connected() const;
-
+  bdaddr_t address;
 
   private:
   int _socket;

@@ -203,7 +203,7 @@ bool BluetoothHciL2Socket::connected() const {
   return this->_socket != -1;
 }
 
-BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char* srcaddr, char srcType, bdaddr_t bdaddr, char bdaddrType, uint64_t expires): _parent(parent), _expires(expires), l2_src({}), l2_dst({}) {
+BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char* srcaddr, char srcType, bdaddr_t bdaddr, char bdaddrType, uint64_t expires): _parent(parent), _expires(expires), l2_src({}), l2_dst({}), address(bdaddr) {
     unsigned short l2cid;
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -515,7 +515,14 @@ int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
       return 0;
     }
     //printf("Disconn Complete for handle %d (%d)\n", handle, this->_l2sockets_handles.count(handle));
-    this->_l2sockets_handles.erase(handle);
+    auto it = this->_l2sockets_handles.find(handle);
+    if(it != this->_l2sockets_handles.end()){
+      this->_l2sockets_connected.erase(it->second->address);
+      this->_l2sockets_connecting.erase(it->second->address);
+      this->_l2sockets_handles.erase(it);
+    }
+
+
   } else if(length == 34 && data[1] == 0x3e && data[3] == 0x0a && data[4] == 0x00){
     // 04 3e 1f 0a 00 10 00 00 00 67 c3 2e 6f 7c b8 00 00 00 00 00 00 00 00 00 00 00 00 24 00 00 00 2a 00 00
     unsigned short handle = *((unsigned short*)(&data[5]));
@@ -547,18 +554,14 @@ bool BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType){
     l2socket_ptr->disconnect();
     l2socket_ptr->connect();
     l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
-  } else{    
+  } else {
     // 60000000000  = 1 minute
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, uv_hrtime() + L2_CONNECT_TIMEOUT);
-    if(!l2socket_ptr->connected()){
-      return false;
-    }
     this->_l2sockets_connecting[addr] = l2socket_ptr;
   }
 
-
-    // returns true to skip sending the kernel this commoand
-    // the command will instead be sent by the connect() operation
+  // returns true to skip sending the kernel this commoand
+  // the command will instead be sent by the connect() operation
   return true;
 }
 
