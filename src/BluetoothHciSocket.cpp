@@ -3,7 +3,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-
+#include <stdarg.h>
 #include <node_buffer.h>
 #include <nan.h>
 
@@ -27,6 +27,10 @@
 #define HCI_MAX_DEV 16
 
 #define ATT_CID 4
+
+#define ADDRESS_LOG(address) address.b[0], address.b[1], address.b[2], address.b[3], address.b[4], address.b[5]
+
+const char DisconnectedReason[] = "disconnection command";
 
 enum {
   HCI_UP,
@@ -105,6 +109,7 @@ NAN_MODULE_INIT(BluetoothHciSocket::Init) {
   tmpl->InstanceTemplate()->SetInternalFieldCount(1);
   tmpl->SetClassName(Nan::New("BluetoothHciSocket").ToLocalChecked());
 
+  Nan::SetPrototypeMethod(tmpl, "prepare", Prepare);
   Nan::SetPrototypeMethod(tmpl, "start", Start);
   Nan::SetPrototypeMethod(tmpl, "bindRaw", BindRaw);
   Nan::SetPrototypeMethod(tmpl, "bindUser", BindUser);
@@ -120,12 +125,13 @@ NAN_MODULE_INIT(BluetoothHciSocket::Init) {
   Nan::Set(target, Nan::New("BluetoothHciSocket").ToLocalChecked(), Nan::GetFunction(tmpl).ToLocalChecked());
 }
 
-BluetoothCommunicator::BluetoothCommunicator() :
+BluetoothCommunicator::BluetoothCommunicator(bool debug) :
   _socket(-1),
   _mode(0),
   _devId(0),
   _address(),
-  _addressType(0)
+  _addressType(0),
+  _debug(debug)
 {
 
 }
@@ -133,9 +139,24 @@ BluetoothCommunicator::BluetoothCommunicator() :
 BluetoothHciSocket::BluetoothHciSocket():
   node::ObjectWrap(),
   _pollHandle(),
-  _communicator(new BluetoothCommunicator())
-  {
+  _communicator(nullptr)
+  {}
+
+BluetoothHciSocket::~BluetoothHciSocket() {
+  uv_close((uv_handle_t*)&this->_pollHandle, (uv_close_cb)BluetoothHciSocket::PollCloseCallback);
+}
+
+NAN_METHOD(BluetoothHciSocket::Prepare){
+  BluetoothHciSocket* p = node::ObjectWrap::Unwrap<BluetoothHciSocket>(info.This());
   int zero = 0;
+
+  Local<Value> arg0 = info[0];
+  if (!arg0->IsBoolean()){
+    Nan::ThrowError("Debug must be boolean");
+    return;
+  }
+
+  p->_communicator.reset(new BluetoothCommunicator(arg0->BooleanValue(Nan::GetCurrentContext()->GetIsolate())));
 
   int fd = socket(AF_BLUETOOTH, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI);
   if (fd == -1) {
@@ -149,20 +170,14 @@ BluetoothHciSocket::BluetoothHciSocket():
     return;
   }
 
-  this->_communicator->_socket = fd;
+  p->_communicator->_socket = fd;
 
-  if (uv_poll_init(uv_default_loop(), &this->_pollHandle, this->_communicator->_socket) < 0) {
+  if (uv_poll_init(uv_default_loop(), &p->_pollHandle, p->_communicator->_socket) < 0) {
     Nan::ThrowError("uv_poll_init failed");
     return;
   }
 
-  this->_pollHandle.data = this;
-}
-
-BluetoothHciSocket::~BluetoothHciSocket() {
-  uv_close((uv_handle_t*)&this->_pollHandle, (uv_close_cb)BluetoothHciSocket::PollCloseCallback);
-
-  close(this->_communicator->_socket);
+  p->_pollHandle.data = p;
 }
 
 void BluetoothHciL2Socket::connect(){
@@ -180,15 +195,21 @@ void BluetoothHciL2Socket::connect(){
     if(errno == EINTR) {
       continue;
     }
+    _parent->log("BluetoothHCISocket: Failed connection to %02x:%02x:%02x:%02x:%02x:%02x (socket %d) with errno %d\n", ADDRESS_LOG(address), _socket, errno);
     close(_socket);
     _socket = -1;
     break;
   }
+
+  _parent->log("BluetoothHCISocket: Connected to %02x:%02x:%02x:%02x:%02x:%02x socket %d\n", ADDRESS_LOG(address), _socket);
 }
 
-void BluetoothHciL2Socket::disconnect(){
-  if(this->_socket != -1) close(this->_socket);
-  this->_socket = -1;
+void BluetoothHciL2Socket::disconnect(const char* reason){
+  if(this->_socket != -1) {  
+    _parent->log("BluetoothHCISocket: Disconnecting from  %02x:%02x:%02x:%02x:%02x:%02x (socket: %d, handle: %d) due to %s\n", ADDRESS_LOG(address), _socket, handle, reason);
+    close(this->_socket);
+    this->_socket = -1;
+  }
 }
 
 void BluetoothHciL2Socket::expires(uint64_t expires){
@@ -203,44 +224,64 @@ bool BluetoothHciL2Socket::connected() const {
   return this->_socket != -1;
 }
 
-BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char* srcaddr, char srcType, bdaddr_t bdaddr, char bdaddrType, uint64_t expires): _parent(parent), _expires(expires), l2_src({}), l2_dst({}), address(bdaddr) {
-    unsigned short l2cid;
-
+static unsigned short htobs(unsigned short v) {
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-    l2cid = ATT_CID;
+    return v;
 #elif __BYTE_ORDER == __BIG_ENDIAN
-    l2cid = bswap_16(ATT_CID);
+    return bswap_16(v);
 #else
     #error "Unknown byte order"
 #endif
+}
+
+BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char* srcaddr, char srcType, bdaddr_t bdaddr, char bdaddrType, uint64_t expires): _parent(parent), address(bdaddr), reason(nullptr), handle(-1), _expires(expires), l2_src({}), l2_dst({}) {
+    unsigned short l2cid = htobs(ATT_CID);
     
     memset(&l2_src, 0, sizeof(l2_src));
     l2_src.l2_family = AF_BLUETOOTH;
     l2_src.l2_cid = l2cid;
     memcpy(&l2_src.l2_bdaddr, srcaddr, sizeof(l2_src.l2_bdaddr));
     l2_src.l2_bdaddr_type = srcType;
+    //l2_src.l2_psm = 0;
       
     memset(&l2_dst, 0, sizeof(l2_dst));
     l2_dst.l2_family = AF_BLUETOOTH;
     memcpy(&l2_dst.l2_bdaddr, &bdaddr, sizeof(l2_dst.l2_bdaddr));
     l2_dst.l2_cid = l2cid;
     l2_dst.l2_bdaddr_type = bdaddrType; // BDADDR_LE_PUBLIC (0x01), BDADDR_LE_RANDOM (0x02)
+    //l2_dst.l2_psm = 0;
 
     connect();
 }
 
-void BluetoothHciSocket::cleanup_l2(bdaddr_t addr){
-  _communicator->cleanup_l2(addr);
+void BluetoothHciSocket::cleanup_l2(unsigned short handle){
+  _communicator->cleanup_l2(handle);
 }
 
-void BluetoothCommunicator::cleanup_l2(bdaddr_t addr){
-  _l2sockets_connected.erase(addr);
+void BluetoothCommunicator::cleanup_l2(unsigned short handle){
+  auto it = _l2sockets_connected.find(handle);
+  if(it != _l2sockets_connected.end()){
+    it->second->reason = "cleanup";
+    _l2sockets_connected.erase(it);
+  } else {
+    this->log("Got request to cleanup handle %d but we don't have it\n", handle);
+  }
+}
+
+
+
+void BluetoothCommunicator::log(const char* format, ...){
+  if(!this->_debug) return;
+  va_list args;
+  va_start(args, format);
+  vfprintf(stderr, format, args);
+  va_end(args);
 }
 
 BluetoothHciL2Socket::~BluetoothHciL2Socket(){
-  if(this->_socket != -1) disconnect();
-  if(_expires == 0){
-    this->_parent->cleanup_l2(l2_dst.l2_bdaddr);
+  if(this->_socket != -1) disconnect(this->reason ? this->reason : "destruction");
+  if(_expires == 0 && handle >= 0 && reason != DisconnectedReason){
+    this->_parent->cleanup_l2(handle);
   }
 }
 
@@ -254,7 +295,6 @@ int BluetoothHciSocket::bindRaw(int* devId) {
   struct sockaddr_hci a = {};
   struct hci_dev_info di = {};
 
-  memset(&a, 0, sizeof(a));
   a.hci_family = AF_BLUETOOTH;
   a.hci_dev = this->devIdFor(devId, true);
   a.hci_channel = HCI_CHANNEL_RAW;
@@ -289,7 +329,6 @@ int BluetoothHciSocket::bindRaw(int* devId) {
 int BluetoothHciSocket::bindUser(int* devId) {
   struct sockaddr_hci a = {};
 
-  memset(&a, 0, sizeof(a));
   a.hci_family = AF_BLUETOOTH;
   a.hci_dev = this->devIdFor(devId, false);
   a.hci_channel = HCI_CHANNEL_USER;
@@ -447,35 +486,44 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
 
   std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
 
-  auto it = _l2sockets_connected.find(addr);
+  auto it = _l2sockets_connected.find(handle);
   if(it != _l2sockets_connected.end()){
-    l2socket_ptr = it->second.lock();
-  } else {
-    auto it2 = _l2sockets_connecting.find(addr);
+    if(memcmp(&it->second->address, &addr, sizeof(addr)) != 0){
+      it->second->disconnect("duplicate handle");
+    }else{
+      this->log("Got a second handle for the same device");
+      return true;
+    }
+  } 
+  
+  auto it2 = _l2sockets_connecting.find(addr);
 
-    if(it2 != _l2sockets_connecting.end()){
-      //successful connection (we have a handle for the socket!)
-      l2socket_ptr = it2->second;
-      l2socket_ptr->expires(0);
-      _l2sockets_connecting.erase(it2);
-    } else {
-      l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, 0);
-      if(!l2socket_ptr->connected()){
-        //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected\n", data[9], data[10], data[11], data[12], data[13], data[14],  handle);
-        return false;
-      }
-      this->_l2sockets_connected[addr] = l2socket_ptr;
+  if(it2 != _l2sockets_connecting.end()){
+    //successful connection (we have a handle for the socket!)
+    l2socket_ptr = it2->second;
+    l2socket_ptr->expires(0);
+    l2socket_ptr->reason = "connected";
+    assert(l2socket_ptr != nullptr);
+    _l2sockets_connecting.erase(it2);
+    assert(l2socket_ptr != nullptr);
+    l2socket_ptr->reason = NULL;
+  } else {
+    l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, 0);
+    if(!l2socket_ptr->connected()){
+      //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected\n", data[9], data[10], data[11], data[12], data[13], data[14],  handle);
+      return false;
     }
   }
 
-    
   if(!l2socket_ptr->connected()){
-    //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected (2)\n", data[9], data[10], data[11], data[12], data[13], data[14], handle);
+    l2socket_ptr->reason = "connect() failed";
     return false;
   }
 
-  
-  this->_l2sockets_handles[handle] = l2socket_ptr;
+  // we are connected (store)
+  l2socket_ptr->handle = handle;
+  this->_l2sockets_connected[handle] = l2socket_ptr;
+
 
   return true;
 }
@@ -515,11 +563,10 @@ int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
       return 0;
     }
     //printf("Disconn Complete for handle %d (%d)\n", handle, this->_l2sockets_handles.count(handle));
-    auto it = this->_l2sockets_handles.find(handle);
-    if(it != this->_l2sockets_handles.end()){
-      this->_l2sockets_connected.erase(it->second->address);
-      this->_l2sockets_connecting.erase(it->second->address);
-      this->_l2sockets_handles.erase(it);
+    auto it = this->_l2sockets_connected.find(handle);
+    if(it != this->_l2sockets_connected.end()){
+      it->second->reason = DisconnectedReason;
+      this->_l2sockets_connected.erase(it);
     }
 
 
@@ -542,16 +589,10 @@ int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
 
 bool BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType){
   std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
-  if(this->_l2sockets_connected.find(addr) != this->_l2sockets_connected.end()){
-    // we are refreshing the connection (which was connected)
-    l2socket_ptr = this->_l2sockets_connected[addr].lock();
-    l2socket_ptr->disconnect();
-    l2socket_ptr->connect();
-    // no expiration as we will continue to be "connected" on the other handle which must exist
-  } else if(this->_l2sockets_connecting.find(addr) != this->_l2sockets_connecting.end()){
+  if(this->_l2sockets_connecting.find(addr) != this->_l2sockets_connecting.end()){
     // we were connecting but now we connect again
     l2socket_ptr = this->_l2sockets_connecting[addr];
-    l2socket_ptr->disconnect();
+    l2socket_ptr->disconnect("refresh, already connecting");
     l2socket_ptr->connect();
     l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
   } else {
@@ -664,6 +705,8 @@ void BluetoothCommunicator::cleanup(){
   {
     if (now < it->second->expires())
     {
+      log("cleanup %02x:%02x:%02x:%02x:%02x:%02x (handle %d) due co connection timeout\n", ADDRESS_LOG(it->second->address), it->second->handle);
+      it->second->reason = "connection timeout";
       this->_l2sockets_connecting.erase(it++);    // or "it = m.erase(it)" since C++11
     }
     else
@@ -873,6 +916,8 @@ NAN_METHOD(BluetoothHciSocket::KernelDisconnectWorkArounds){
 }
 
 void BluetoothHciSocket::PollCloseCallback(uv_poll_t* handle) {
+  BluetoothHciSocket *p = (BluetoothHciSocket*)handle->data;
+  if(p->_communicator) close(p->_communicator->_socket);
   delete handle;
 }
 
