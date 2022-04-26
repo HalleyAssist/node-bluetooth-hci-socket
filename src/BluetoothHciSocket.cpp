@@ -611,7 +611,7 @@ bool BluetoothCommunicator::kernelConnectWorkArounds(char* data, int length)
   // data[3]: plen
   // data[8 ...] payload
   if (length > 14 && data[0] == 0x01 && data[1] == 0x43 && data[2] == 0x20) {
-    return this-handleConnecting(*(bdaddr_t*)&data[7], data[6]+1);
+    return this->handleConnecting(*(bdaddr_t*)&data[7], data[6]+1);
   }
 
   // if statement:
@@ -621,7 +621,7 @@ bool BluetoothCommunicator::kernelConnectWorkArounds(char* data, int length)
   // data[10 ...] addr
 
   if (length == 29 && data[0] == 0x01 && data[1] == 0x0d && data[2] == 0x20 && data[3] == 0x19) {
-    return this-handleConnecting(*(bdaddr_t*)&data[10], data[9]+1);
+    return this->handleConnecting(*(bdaddr_t*)&data[10], data[9]+1);
   }
 
   // cancel connection attempt
