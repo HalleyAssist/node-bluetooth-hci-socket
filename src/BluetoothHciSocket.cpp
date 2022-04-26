@@ -198,7 +198,7 @@ void BluetoothHciL2Socket::connect(){
     _parent->log("BluetoothHCISocket: Failed connection to %02x:%02x:%02x:%02x:%02x:%02x (socket %d) with errno %d\n", ADDRESS_LOG(address), _socket, errno);
     close(_socket);
     _socket = -1;
-    break;
+    return;
   }
 
   _parent->log("BluetoothHCISocket: Connected to %02x:%02x:%02x:%02x:%02x:%02x socket %d\n", ADDRESS_LOG(address), _socket);
@@ -250,8 +250,6 @@ BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsign
     l2_dst.l2_cid = l2cid;
     l2_dst.l2_bdaddr_type = bdaddrType; // BDADDR_LE_PUBLIC (0x01), BDADDR_LE_RANDOM (0x02)
     //l2_dst.l2_psm = 0;
-
-    connect();
 }
 
 void BluetoothHciSocket::cleanup_l2(unsigned short handle){
@@ -509,6 +507,7 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
     l2socket_ptr->reason = NULL;
   } else {
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, 0);
+    l2socket_ptr->connect();
     if(!l2socket_ptr->connected()){
       //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected\n", data[9], data[10], data[11], data[12], data[13], data[14],  handle);
       return false;
@@ -598,6 +597,7 @@ bool BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType){
   } else {
     // 60000000000  = 1 minute
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, uv_hrtime() + L2_CONNECT_TIMEOUT);
+    l2socket_ptr->connect();
     this->_l2sockets_connecting[addr] = l2socket_ptr;
   }
 
