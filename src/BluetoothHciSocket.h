@@ -64,7 +64,7 @@ public:
   bool write(char* data, int length);
   void cleanup();
   void cleanup_l2(unsigned short handle);
-  int kernelDisconnectWorkArounds(char* data, int length);
+  bool kernelDisconnectWorkArounds(char* data, int length);
   void log(const char* format, ...);
 
 private:

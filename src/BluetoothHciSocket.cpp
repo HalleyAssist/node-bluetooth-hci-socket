@@ -508,10 +508,6 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
   } else {
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, 0);
     l2socket_ptr->connect();
-    if(!l2socket_ptr->connected()){
-      //printf("%02x:%02x:%02x:%02x:%02x:%02x handle %d was not connected\n", data[9], data[10], data[11], data[12], data[13], data[14],  handle);
-      return false;
-    }
   }
 
   if(!l2socket_ptr->connected()){
@@ -528,9 +524,9 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
 }
 
 
-int BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
+bool BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
   if (this->_mode != HCI_CHANNEL_RAW || data[0] != 0x04) {
-    return 0;
+    return true;
   }
 
   // HCI Event - LE Meta Event - LE Connection Complete => manually create L2CAP socket to force kernel to book keep
@@ -626,6 +622,14 @@ bool BluetoothCommunicator::kernelConnectWorkArounds(char* data, int length)
 
   if (length == 29 && data[0] == 0x01 && data[1] == 0x0d && data[2] == 0x20 && data[3] == 0x19) {
     return this-handleConnecting(*(bdaddr_t*)&data[10], data[9]+1);
+  }
+
+  // cancel connection attempt
+  if (length >= 4 && data[0] == 0x01 && data[1] == 0x0e && data[2] == 0x20 && data[3] == 0x00) {
+    for(auto it = this->_l2sockets_connecting.begin(); it != this->_l2sockets_connecting.end(); it++){
+      it->second->disconnect("cancel");
+    }
+    this->_l2sockets_connecting.clear();
   }
 
   return false;
