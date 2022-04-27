@@ -584,7 +584,7 @@ bool BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) 
     return false;
   }
 
-  return true;
+  return false;
 }
 
 bool BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType){
