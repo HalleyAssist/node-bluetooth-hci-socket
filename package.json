@@ -29,14 +29,18 @@
   "dependencies": {
     "@mapbox/node-pre-gyp": "^1.0.5",
     "debug": "^4.3.2",
+    "mocha": "^8.3.2",
     "nan": "^2.15.0"
   },
   "devDependencies": {
-    "jshint": "^2.13.1"
+    "chai": "^4.3.6",
+    "chai-as-promised": "^7.1.1",
+    "jshint": "^2.13.1",
+    "q-lite": "git+https://github.com/HalleyAssist/q-lite.git"
   },
   "scripts": {
     "install": "node-pre-gyp install --fallback-to-build --build-from-source",
-    "test": "jshint lib/*.js && node test.js"
+    "test": "jshint lib/*.js && node test-script.js && mocha tests/"
   },
   "binary": {
     "module_name": "bluetooth_hci_socket",
