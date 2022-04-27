@@ -46,6 +46,6 @@
     "remote_path": "{version}"
   },
   "jshintConfig": {
-    "esversion": 6
+    "esversion": 8
   }
 }
