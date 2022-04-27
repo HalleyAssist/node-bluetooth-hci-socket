@@ -542,9 +542,12 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
 
   std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
 
+
+  _l2sockets_mutex.lock();
   auto it = _l2sockets_connected.find(handle);
   if (it != _l2sockets_connected.end())
   {
+    _l2sockets_mutex.unlock();
     if (memcmp(&it->second->address, &addr, sizeof(addr)) != 0)
     {
       it->second->disconnect("duplicate handle");
@@ -554,38 +557,47 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
       this->log("Got a second handle for the same device");
       return true;
     }
+  }else{  
+    _l2sockets_mutex.unlock();
   }
 
-  auto it2 = _l2sockets_connecting.find(addr);
 
+  _l2sockets_mutex.lock();
+  auto it2 = _l2sockets_connecting.find(addr);
   if (it2 != _l2sockets_connecting.end())
   {
     // successful connection (we have a handle for the socket!)
     l2socket_ptr = it2->second;
     l2socket_ptr->expires(0);
     l2socket_ptr->reason = "connected";
+    l2socket_ptr->handle = handle;
     assert(l2socket_ptr != nullptr);
     _l2sockets_connecting.erase(it2);
     assert(l2socket_ptr != nullptr);
     l2socket_ptr->reason = NULL;
+  _l2sockets_mutex.unlock();
   }
   else
-  {
+  {  
+    _l2sockets_mutex.unlock();
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, 0);
     l2socket_ptr->connect("connection response");
   }
+  
 
   if (!l2socket_ptr->connected())
   {
     this->log("Failed to connect to %02x:%02x:%02x:%02x:%02x:%02x while handling connection complete\n", ADDRESS_LOG(addr));
     l2socket_ptr->reason = "connect() failed";
-    _l2sockets_mutex.unlock();
     return false;
   }
 
   // we are connected (store)
   l2socket_ptr->handle = handle;
+  
+  _l2sockets_mutex.lock();
   this->_l2sockets_connected[handle] = l2socket_ptr;
+  _l2sockets_mutex.unlock();
 
   return true;
 }
@@ -596,8 +608,6 @@ const char *BluetoothCommunicator::kernelDisconnectWorkArounds(char *data, int l
   {
     return nullptr;
   }
-
-  _l2sockets_mutex.lock();
 
   // HCI Event - LE Meta Event - LE Connection Complete => manually create L2CAP socket to force kernel to book keep
   // this socket will be closed on disconnection
@@ -616,16 +626,13 @@ const char *BluetoothCommunicator::kernelDisconnectWorkArounds(char *data, int l
     unsigned short handle = *((unsigned short *)(&data[5]));
     if (handle == 0)
     {
-      _l2sockets_mutex.unlock();
       return nullptr;
     }
     if (!this->handleConnectionComplete(handle, *(bdaddr_t *)&data[9], data[8] + 1))
     {
-      _l2sockets_mutex.unlock();
       return "failed connection";
     }
 
-    _l2sockets_mutex.unlock();
     return nullptr; // "handled connection";
   }
   else if (length == 7 && data[1] == 0x05 && data[2] == 0x04 && data[3] == 0x00)
@@ -636,9 +643,11 @@ const char *BluetoothCommunicator::kernelDisconnectWorkArounds(char *data, int l
     unsigned short handle = *((unsigned short *)(&data[4]));
     if (handle == 0)
     {
-      _l2sockets_mutex.unlock();
       return nullptr;
     }
+
+    
+    _l2sockets_mutex.lock();
     // printf("Disconn Complete for handle %d (%d)\n", handle, this->_l2sockets_handles.count(handle));
     auto it = this->_l2sockets_connected.find(handle);
     if (it != this->_l2sockets_connected.end())
@@ -657,32 +666,30 @@ const char *BluetoothCommunicator::kernelDisconnectWorkArounds(char *data, int l
     unsigned short handle = *((unsigned short *)(&data[5]));
     if (handle == 0)
     {
-      _l2sockets_mutex.unlock();
       return nullptr;
     }
 
     if (!this->handleConnectionComplete(handle, *(bdaddr_t *)&data[9], data[8] + 1))
     {
-      _l2sockets_mutex.unlock();
       return "failed enhanced connection";
     }
 
-    _l2sockets_mutex.unlock();
     return nullptr; //"handled connection";
   }
 
-  _l2sockets_mutex.unlock();
   return nullptr;
 }
 
 const char *BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType)
 {
   std::shared_ptr<BluetoothHciL2Socket> l2socket_ptr;
+  _l2sockets_mutex.lock();
   if (this->_l2sockets_connecting.find(addr) != this->_l2sockets_connecting.end())
   {
     // we were connecting but now we connect again
-    l2socket_ptr = this->_l2sockets_connecting[addr];
+    l2socket_ptr = this->_l2sockets_connecting[addr];  
     l2socket_ptr->disconnect("refresh, already connecting");
+    _l2sockets_mutex.unlock();
     l2socket_ptr->connect("connection request (refresh)");
     l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
     if (!l2socket_ptr->connected())
@@ -692,13 +699,18 @@ const char *BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType
   }
   else
   {
+    _l2sockets_mutex.unlock();
     // 60000000000  = 1 minute
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, uv_hrtime() + L2_CONNECT_TIMEOUT);
+    _l2sockets_mutex.lock();
     this->_l2sockets_connecting[addr] = l2socket_ptr;
+    _l2sockets_mutex.unlock();
     l2socket_ptr->connect("connection request");
     if (!l2socket_ptr->connected())
     {
+      _l2sockets_mutex.lock();
       this->_l2sockets_connecting.erase(addr);
+      _l2sockets_mutex.unlock();
       return "connect failed";
     }
   }
@@ -751,9 +763,6 @@ const char *BluetoothCommunicator::kernelConnectWorkArounds(char *data, int leng
     return nullptr;
   }
 
-
-  _l2sockets_mutex.lock();
-
   const char* ret = nullptr;
 
   // if statement:
@@ -780,14 +789,14 @@ const char *BluetoothCommunicator::kernelConnectWorkArounds(char *data, int leng
   // cancel connection attempt
   else if (length >= 4 && data[0] == 0x01 && data[1] == 0x0e && data[2] == 0x20 && data[3] == 0x00)
   {
+    _l2sockets_mutex.lock();
     for (auto it = this->_l2sockets_connecting.begin(); it != this->_l2sockets_connecting.end(); it++)
     {
       it->second->disconnect("cancel");
     }
     this->_l2sockets_connecting.clear();
+    _l2sockets_mutex.unlock();
   }
-
-  _l2sockets_mutex.unlock();
 
   return ret; // continue and do write
 }
