@@ -689,9 +689,9 @@ const char *BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType
     // we were connecting but now we connect again
     l2socket_ptr = this->_l2sockets_connecting[addr];  
     l2socket_ptr->disconnect("refresh, already connecting");
+    l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
     _l2sockets_mutex.unlock();
     l2socket_ptr->connect("connection request (refresh)");
-    l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
     if (!l2socket_ptr->connected())
     {
       return "connect failed";
@@ -910,6 +910,7 @@ void BluetoothCommunicator::cleanup()
 {
   auto now = uv_hrtime();
 
+  _l2sockets_mutex.lock();
   for (auto it = this->_l2sockets_connecting.cbegin(); it != this->_l2sockets_connecting.cend() /* not hoisted */; /* no increment */)
   {
     if (now < it->second->expires())
@@ -923,6 +924,7 @@ void BluetoothCommunicator::cleanup()
       ++it;
     }
   }
+  _l2sockets_mutex.unlock();
 }
 
 NAN_METHOD(BluetoothHciSocket::Cleanup)
@@ -1079,6 +1081,7 @@ NAN_METHOD(BluetoothHciSocket::Info)
 
   BluetoothHciSocket *p = node::ObjectWrap::Unwrap<BluetoothHciSocket>(info.This());
 
+  p->_communicator->_l2sockets_mutex.lock();
   Local<Array> handles = Nan::New<v8::Array>();
   for (auto it = p->_communicator->_l2sockets_connected.begin(); it != p->_communicator->_l2sockets_connected.end(); ++it)
   {
@@ -1095,6 +1098,7 @@ NAN_METHOD(BluetoothHciSocket::Info)
     Nan::Set(addresses, addresses->Length(), h);
   }
   Nan::Set(ret, Nan::New("connectingAddresses").ToLocalChecked(), addresses);
+  p->_communicator->_l2sockets_mutex.unlock();
 
   info.GetReturnValue().Set(ret);
 }
