@@ -65,6 +65,7 @@ public:
   void cleanup();
   void cleanup_l2(unsigned short handle);
   bool kernelDisconnectWorkArounds(char* data, int length);
+  const char* kernelConnectWorkArounds(char* data, int length);
   void log(const char* format, ...);
 
 private:
@@ -78,8 +79,7 @@ private:
   std::map<unsigned short, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_connected;
   std::map<bdaddr_t, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_connecting;
 
-  bool kernelConnectWorkArounds(char* data, int length);
-  bool handleConnecting(bdaddr_t addr, char addrType);
+  const char* handleConnecting(bdaddr_t addr, char addrType);
   bool handleConnectionComplete(unsigned short handle, bdaddr_t addr, char addrType);
 };
 
@@ -102,6 +102,7 @@ public:
   static NAN_METHOD(Stop);
   static NAN_METHOD(Write);
   static NAN_METHOD(KernelDisconnectWorkArounds);
+  static NAN_METHOD(KernelConnectWorkArounds);
   static NAN_METHOD(Cleanup);
 
 private:
