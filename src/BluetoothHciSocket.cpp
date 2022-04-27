@@ -546,18 +546,20 @@ bool BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) 
   if (length == 22 && data[1] == 0x3e && data[2] == 0x13 && data[3] == 0x01 && data[4] == 0x00) { //  && data[7] == 0x01
     unsigned short handle = *((unsigned short*)(&data[5]));
     if(handle == 0) {
-      return 0;
+      return true;
     }
     if(!this->handleConnectionComplete(handle, *(bdaddr_t*)&data[9], data[8] + 1)){
-      return 0;
+      return true;
     }
+
+    return false;
   } else if (length == 7 && data[1] == 0x05 && data[2] == 0x04 && data[3] == 0x00) {
     
     // HCI Event - Disconn Complete =======================> close socket from above
     // This uses handle, response (so handle is at offset 4)
     unsigned short handle = *((unsigned short*)(&data[4]));
     if(handle == 0) {
-      return 0;
+      return true;
     }
     //printf("Disconn Complete for handle %d (%d)\n", handle, this->_l2sockets_handles.count(handle));
     auto it = this->_l2sockets_connected.find(handle);
@@ -566,22 +568,23 @@ bool BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) 
       this->_l2sockets_connected.erase(it);
     }
 
-
+    return true;
   } else if(length == 34 && data[1] == 0x3e && data[3] == 0x0a && data[4] == 0x00){
+    // Enhanced connection complete event
     // 04 3e 1f 0a 00 10 00 00 00 67 c3 2e 6f 7c b8 00 00 00 00 00 00 00 00 00 00 00 00 24 00 00 00 2a 00 00
     unsigned short handle = *((unsigned short*)(&data[5]));
     if(handle == 0) {
-      return 0;
+      return true;
     }
 
     if(!this->handleConnectionComplete(handle, *(bdaddr_t*)&data[9], data[8] + 1)){
-      return 0;
+      return true;
     }
+
+    return false;
   }
 
-  // TODO: Enhanced CONNECTION_COMPLETE event
-
-  return 0;
+  return true;
 }
 
 bool BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType){
@@ -695,7 +698,9 @@ class BluetoothDisconnectWorker : public Nan::AsyncWorker {
   // here, so everything we need for input and output
   // should go on `this`.
   void Execute () {
-    this->_socket->kernelDisconnectWorkArounds(_data, _length);
+    if(this->_socket->kernelDisconnectWorkArounds(_data, _length)){
+      SetErrorMessage("failed");
+    }
   }
 
  private:
