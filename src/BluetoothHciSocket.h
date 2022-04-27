@@ -37,7 +37,7 @@ class BluetoothCommunicator;
 
 class BluetoothHciL2Socket {
   public:
-  BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char*, char, bdaddr_t, char, uint64_t expires);
+  BluetoothHciL2Socket(BluetoothCommunicator* parent, bdaddr_t, char, bdaddr_t, char, uint64_t expires);
   ~BluetoothHciL2Socket();
   void disconnect(const char*);
   void connect();
@@ -74,7 +74,7 @@ private:
   int _devId;
   int _mode;
   int _socket;
-  uint8_t _address[6];
+  bdaddr_t _address;
   uint8_t _addressType;
   bool _debug;
   
@@ -98,6 +98,7 @@ public:
   static NAN_METHOD(BindUser);
   static NAN_METHOD(BindControl);
   static NAN_METHOD(IsDevUp);
+  static NAN_METHOD(Info);
   static NAN_METHOD(GetDeviceList);
   static NAN_METHOD(SetFilter);
   static NAN_METHOD(Start);

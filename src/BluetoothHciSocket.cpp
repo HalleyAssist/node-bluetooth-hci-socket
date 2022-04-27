@@ -117,6 +117,7 @@ NAN_MODULE_INIT(BluetoothHciSocket::Init) {
   Nan::SetPrototypeMethod(tmpl, "isDevUp", IsDevUp);
   Nan::SetPrototypeMethod(tmpl, "getDeviceList", GetDeviceList);
   Nan::SetPrototypeMethod(tmpl, "setFilter", SetFilter);
+  Nan::SetPrototypeMethod(tmpl, "info", Info);
   Nan::SetPrototypeMethod(tmpl, "stop", Stop);
   Nan::SetPrototypeMethod(tmpl, "write", Write);
   Nan::SetPrototypeMethod(tmpl, "kernelDisconnectWorkArounds", KernelDisconnectWorkArounds);
@@ -235,13 +236,13 @@ static unsigned short htobs(unsigned short v) {
 #endif
 }
 
-BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, unsigned char* srcaddr, char srcType, bdaddr_t bdaddr, char bdaddrType, uint64_t expires): _parent(parent), address(bdaddr), reason(nullptr), handle(-1), _expires(expires), l2_src({}), l2_dst({}) {
+BluetoothHciL2Socket::BluetoothHciL2Socket(BluetoothCommunicator* parent, bdaddr_t srcaddr, char srcType, bdaddr_t bdaddr, char bdaddrType, uint64_t expires): _parent(parent), address(bdaddr), reason(nullptr), handle(-1), _expires(expires), l2_src({}), l2_dst({}) {
     unsigned short l2cid = htobs(ATT_CID);
     
     memset(&l2_src, 0, sizeof(l2_src));
     l2_src.l2_family = AF_BLUETOOTH;
     l2_src.l2_cid = l2cid;
-    memcpy(&l2_src.l2_bdaddr, srcaddr, sizeof(l2_src.l2_bdaddr));
+    memcpy(&l2_src.l2_bdaddr, srcaddr.b, sizeof(l2_src.l2_bdaddr));
     l2_src.l2_bdaddr_type = srcType;
     //l2_src.l2_psm = 0;
       
@@ -309,11 +310,11 @@ int BluetoothHciSocket::bindRaw(int* devId) {
   // get the local address and address type
   memset(&di, 0x00, sizeof(di));
   di.dev_id = this->_communicator->_devId;
-  memset(this->_communicator->_address, 0, sizeof(this->_communicator->_address));
+  memset(this->_communicator->_address.b, 0, sizeof(this->_communicator->_address.b));
   this->_communicator->_addressType = 0;
 
   if (ioctl(this->_communicator->_socket, HCIGETDEVINFO, (void *)&di) > -1) {
-    memcpy(this->_communicator->_address, &di.bdaddr, sizeof(di.bdaddr));
+    memcpy(this->_communicator->_address.b, &di.bdaddr, sizeof(di.bdaddr));
     this->_communicator->_addressType = di.type;
 
     if (this->_communicator->_addressType == 3) {
@@ -510,6 +511,7 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
   }
 
   if(!l2socket_ptr->connected()){
+    this->log("Failed to connect to %02x:%02x:%02x:%02x:%02x:%02x while handling connection complete", ADDRESS_LOG(_address));
     l2socket_ptr->reason = "connect() failed";
     return false;
   }
@@ -710,10 +712,7 @@ class BluetoothWriteWorker : public Nan::AsyncWorker {
   // here, so everything we need for input and output
   // should go on `this`.
   void Execute () {
-    if(!this->_socket->shouldWrite(this->_data, this->_length)){
-      return;
-    }
-    if(!this->_socket->write(_data, _length)){
+    if(!_socket->write(_data, _length)){
       SetErrorMessage("write");
     }
   }
@@ -729,7 +728,7 @@ class BluetoothDisconnectWorker : public Nan::AsyncWorker {
  public:
   // Constructor
   BluetoothDisconnectWorker(Nan::Callback *callback, std::shared_ptr<BluetoothCommunicator> socket, char* data, int length)
-    : AsyncWorker(callback, "BluetoothWriteWorker"), _socket(socket), _data(data), _length(length) {}
+    : AsyncWorker(callback, "BluetoothDisconnectWorker"), _socket(socket), _data(data), _length(length) {}
   // Destructor
   ~BluetoothDisconnectWorker() {}
 
@@ -754,7 +753,7 @@ class BluetoothConnectWorker : public Nan::AsyncWorker {
  public:
   // Constructor
   BluetoothConnectWorker(Nan::Callback *callback, std::shared_ptr<BluetoothCommunicator> socket, char* data, int length)
-    : AsyncWorker(callback, "BluetoothWriteWorker"), _socket(socket), _data(data), _length(length) {}
+    : AsyncWorker(callback, "BluetoothConnectWorker"), _socket(socket), _data(data), _length(length) {}
   // Destructor
   ~BluetoothConnectWorker() {}
 
@@ -925,6 +924,32 @@ NAN_METHOD(BluetoothHciSocket::GetDeviceList) {
   info.GetReturnValue().Set(deviceList);
 }
 
+NAN_METHOD(BluetoothHciSocket::Info) {
+  char bdaddr[18];
+  v8::Local<v8::Object> ret = Nan::New<v8::Object>();
+
+  BluetoothHciSocket* p = node::ObjectWrap::Unwrap<BluetoothHciSocket>(info.This());
+  
+  Local<Array> handles = Nan::New<v8::Array>();
+  for(auto it = p->_communicator->_l2sockets_connected.begin(); it != p->_communicator->_l2sockets_connected.end(); ++it) {
+    auto h = Nan::New<Number>(it->first);
+    Nan::Set(handles, handles->Length(), h);
+  }
+  Nan::Set(ret, Nan::New("connectedHandles").ToLocalChecked(), handles);
+
+  Local<Array> addresses = Nan::New<v8::Array>();
+  for(auto it = p->_communicator->_l2sockets_connecting.begin(); it != p->_communicator->_l2sockets_connecting.end(); ++it) {
+    snprintf(bdaddr, sizeof(bdaddr), "%02x:%02x:%02x:%02x:%02x:%02x", ADDRESS_LOG(it->first));
+    auto h = Nan::New<String>(bdaddr).ToLocalChecked();
+    Nan::Set(addresses, addresses->Length(), h);
+  }
+  Nan::Set(ret, Nan::New("connectingAddresses").ToLocalChecked(), addresses);
+
+  
+
+  info.GetReturnValue().Set(ret);
+}
+
 NAN_METHOD(BluetoothHciSocket::SetFilter) {
   Nan::HandleScope scope;
 
@@ -966,9 +991,17 @@ NAN_METHOD(BluetoothHciSocket::Write) {
       Local<Function> callback = info[1].As<Function>();
       Nan::Callback* nanCallback = new Nan::Callback(callback);
 
-      BluetoothWriteWorker* worker = new BluetoothWriteWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), node::Buffer::Length(arg0));
-      worker->SaveToPersistent("data", arg0);
-      Nan::AsyncQueueWorker(worker);
+      auto data = node::Buffer::Data(arg0);
+      auto length = node::Buffer::Length(arg0);
+
+      if(p->_communicator->shouldWrite(data, length)){
+        BluetoothWriteWorker* worker = new BluetoothWriteWorker(nanCallback, p->_communicator, data, length);
+        worker->SaveToPersistent("data", arg0);
+        Nan::AsyncQueueWorker(worker);
+      }else{
+        printf("Skipping write of specific command\n");
+        nanCallback->Call(0, nullptr);
+      }
     } else {
       Nan::ThrowTypeError("First argument must be a buffer");
       return;
@@ -997,7 +1030,7 @@ NAN_METHOD(BluetoothHciSocket::KernelDisconnectWorkArounds){
         worker->SaveToPersistent("data", arg0);
         Nan::AsyncQueueWorker(worker);
       }else{
-        nanCallback->Call(0, 0);
+        nanCallback->Call(0, nullptr);
         delete nanCallback;
       }
     } else {
@@ -1022,11 +1055,12 @@ NAN_METHOD(BluetoothHciSocket::KernelConnectWorkArounds){
     if (arg0->IsObject()) {
       Local<Function> callback = info[1].As<Function>();
       int length = node::Buffer::Length(arg0);
+      auto data = node::Buffer::Data(arg0);
     
-      if(p->_communicator->shouldConnectWorkaround(node::Buffer::Data(arg0), length)){
+      if(p->_communicator->shouldConnectWorkaround(data, length)){
         Nan::Callback* nanCallback = new Nan::Callback(callback);
 
-        BluetoothConnectWorker* worker = new BluetoothConnectWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), length);
+        BluetoothConnectWorker* worker = new BluetoothConnectWorker(nanCallback, p->_communicator, data, length);
         worker->SaveToPersistent("data", arg0);
         Nan::AsyncQueueWorker(worker);
       }
