@@ -5,6 +5,7 @@
 #include <map>
 #include <nan.h>
 #include <memory>
+#include <mutex>
 
 // 1 minute in nanoseconds
 #define L2_CONNECT_TIMEOUT 60000000000
@@ -80,6 +81,7 @@ private:
   
   std::map<unsigned short, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_connected;
   std::map<bdaddr_t, std::shared_ptr<BluetoothHciL2Socket>> _l2sockets_connecting;
+  std::mutex _l2sockets_mutex;
 
   const char* handleConnecting(bdaddr_t addr, char addrType);
   bool handleConnectionComplete(unsigned short handle, bdaddr_t addr, char addrType);
