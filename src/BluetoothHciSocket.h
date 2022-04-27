@@ -14,11 +14,11 @@ typedef struct bdaddr_s {
 
   bool operator<(const struct bdaddr_s& r) const {
     for(int i = 0; i < 6; i++) {
-      if(b[i] >= r.b[i]) {
+      if(b[i] > r.b[i]) {
         return false;
       }
     }
-    return true;
+    return b[5] < r.b[5];
   }
 
 } __attribute__((packed)) bdaddr_t;
@@ -40,7 +40,7 @@ class BluetoothHciL2Socket {
   BluetoothHciL2Socket(BluetoothCommunicator* parent, bdaddr_t, char, bdaddr_t, char, uint64_t expires);
   ~BluetoothHciL2Socket();
   void disconnect(const char*);
-  void connect();
+  void connect(const char*);
   void expires(uint64_t expires);
   uint64_t expires() const;
   bool connected() const;

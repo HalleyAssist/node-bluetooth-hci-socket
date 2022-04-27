@@ -28,7 +28,7 @@
 
 #define ATT_CID 4
 
-#define ADDRESS_LOG(address) address.b[0], address.b[1], address.b[2], address.b[3], address.b[4], address.b[5]
+#define ADDRESS_LOG(address) address.b[5], address.b[4], address.b[3], address.b[2], address.b[1], address.b[0]
 
 const char DisconnectedReason[] = "disconnection command";
 
@@ -182,9 +182,11 @@ NAN_METHOD(BluetoothHciSocket::Prepare){
   p->_pollHandle.data = p;
 }
 
-void BluetoothHciL2Socket::connect(){
+void BluetoothHciL2Socket::connect(const char* reason){
   _socket = socket(PF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP);
   if(_socket < 0) return;
+
+  _parent->log("BluetoothHCISocket: Connecting to %02x:%02x:%02x:%02x:%02x:%02x with socket %d due to %s\n", ADDRESS_LOG(address), _socket, reason);
 
   if (bind(_socket, (struct sockaddr*)&l2_src, sizeof(l2_src)) < 0) {
     close(_socket);
@@ -507,11 +509,11 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
     l2socket_ptr->reason = NULL;
   } else {
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, 0);
-    l2socket_ptr->connect();
+    l2socket_ptr->connect("connection response");
   }
 
   if(!l2socket_ptr->connected()){
-    this->log("Failed to connect to %02x:%02x:%02x:%02x:%02x:%02x while handling connection complete", ADDRESS_LOG(_address));
+    this->log("Failed to connect to %02x:%02x:%02x:%02x:%02x:%02x while handling connection complete\n", ADDRESS_LOG(addr));
     l2socket_ptr->reason = "connect() failed";
     return false;
   }
@@ -592,18 +594,22 @@ const char* BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType
     // we were connecting but now we connect again
     l2socket_ptr = this->_l2sockets_connecting[addr];
     l2socket_ptr->disconnect("refresh, already connecting");
-    l2socket_ptr->connect();
+    l2socket_ptr->connect("connection request (refresh)");
     l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
+    if(!l2socket_ptr->connected()){
+      return "connect failed";
+    }
   } else {
     // 60000000000  = 1 minute
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, uv_hrtime() + L2_CONNECT_TIMEOUT);
-    l2socket_ptr->connect();
     this->_l2sockets_connecting[addr] = l2socket_ptr;
+    l2socket_ptr->connect("connection request");
+    if(!l2socket_ptr->connected()){
+      this->_l2sockets_connecting.erase(addr);
+      return "connect failed";
+    }
   }
 
-  if(!l2socket_ptr->connected()){
-    return "connect failed";
-  }
 
   // returns true to skip sending the kernel this commoand
   // the command will instead be sent by the connect() operation
@@ -999,7 +1005,7 @@ NAN_METHOD(BluetoothHciSocket::Write) {
         worker->SaveToPersistent("data", arg0);
         Nan::AsyncQueueWorker(worker);
       }else{
-        printf("Skipping write of specific command\n");
+        //printf("Skipping write of specific command\n");
         nanCallback->Call(0, nullptr);
       }
     } else {
