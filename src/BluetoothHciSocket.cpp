@@ -523,9 +523,9 @@ bool BluetoothCommunicator::handleConnectionComplete(unsigned short handle, bdad
 }
 
 
-bool BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
+const char* BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) {
   if (this->_mode != HCI_CHANNEL_RAW || data[0] != 0x04) {
-    return true;
+    return nullptr;
   }
 
   // HCI Event - LE Meta Event - LE Connection Complete => manually create L2CAP socket to force kernel to book keep
@@ -543,20 +543,20 @@ bool BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) 
   if (length == 22 && data[1] == 0x3e && data[2] == 0x13 && data[3] == 0x01 && data[4] == 0x00) { //  && data[7] == 0x01
     unsigned short handle = *((unsigned short*)(&data[5]));
     if(handle == 0) {
-      return true;
+      return nullptr;
     }
     if(!this->handleConnectionComplete(handle, *(bdaddr_t*)&data[9], data[8] + 1)){
-      return true;
+      return "failed connection";
     }
 
-    return false;
+    return nullptr; // "handled connection";
   } else if (length == 7 && data[1] == 0x05 && data[2] == 0x04 && data[3] == 0x00) {
     
     // HCI Event - Disconn Complete =======================> close socket from above
     // This uses handle, response (so handle is at offset 4)
     unsigned short handle = *((unsigned short*)(&data[4]));
     if(handle == 0) {
-      return true;
+      return nullptr;
     }
     //printf("Disconn Complete for handle %d (%d)\n", handle, this->_l2sockets_handles.count(handle));
     auto it = this->_l2sockets_connected.find(handle);
@@ -565,23 +565,23 @@ bool BluetoothCommunicator::kernelDisconnectWorkArounds(char* data, int length) 
       this->_l2sockets_connected.erase(it);
     }
 
-    return true;
+    return nullptr;
   } else if(length == 34 && data[1] == 0x3e && data[3] == 0x0a && data[4] == 0x00){
     // Enhanced connection complete event
     // 04 3e 1f 0a 00 10 00 00 00 67 c3 2e 6f 7c b8 00 00 00 00 00 00 00 00 00 00 00 00 24 00 00 00 2a 00 00
     unsigned short handle = *((unsigned short*)(&data[5]));
     if(handle == 0) {
-      return true;
+      return nullptr;
     }
 
     if(!this->handleConnectionComplete(handle, *(bdaddr_t*)&data[9], data[8] + 1)){
-      return true;
+      return "failed enhanced connection";
     }
 
-    return false;
+    return nullptr; //"handled connection";
   }
 
-  return false;
+  return nullptr;
 }
 
 const char* BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType){
@@ -605,7 +605,39 @@ const char* BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType
 
   // returns true to skip sending the kernel this commoand
   // the command will instead be sent by the connect() operation
-  return nullptr;
+  return "handled connect";
+}
+
+bool BluetoothCommunicator::shouldWrite(char* data, int length)
+{  
+  if (length > 14 && data[0] == 0x01 && data[1] == 0x43 && data[2] == 0x20) {
+    return false;
+  }
+
+  if (length == 29 && data[0] == 0x01 && data[1] == 0x0d && data[2] == 0x20 && data[3] == 0x19) {
+    return false;
+  }
+
+  return true;
+}
+
+bool BluetoothCommunicator::shouldConnectWorkaround(char* data, int length)
+{  
+  if (length > 14 && data[0] == 0x01 && data[1] == 0x43 && data[2] == 0x20) {
+    return true;
+  }
+
+  if (length == 29 && data[0] == 0x01 && data[1] == 0x0d && data[2] == 0x20 && data[3] == 0x19) {
+    return true;
+  }
+
+
+  // cancel connection attempt
+  if (length >= 4 && data[0] == 0x01 && data[1] == 0x0e && data[2] == 0x20 && data[3] == 0x00) {
+    return true;
+  }
+
+  return false;
 }
 
 
@@ -678,6 +710,9 @@ class BluetoothWriteWorker : public Nan::AsyncWorker {
   // here, so everything we need for input and output
   // should go on `this`.
   void Execute () {
+    if(!this->_socket->shouldWrite(this->_data, this->_length)){
+      return;
+    }
     if(!this->_socket->write(_data, _length)){
       SetErrorMessage("write");
     }
@@ -703,8 +738,9 @@ class BluetoothDisconnectWorker : public Nan::AsyncWorker {
   // here, so everything we need for input and output
   // should go on `this`.
   void Execute () {
-    if(this->_socket->kernelDisconnectWorkArounds(_data, _length)){
-      SetErrorMessage("failed");
+    const char* reason = this->_socket->kernelDisconnectWorkArounds(_data, _length);
+    if(reason != nullptr){
+      SetErrorMessage(reason);
     }
   }
 
@@ -980,16 +1016,20 @@ NAN_METHOD(BluetoothHciSocket::KernelConnectWorkArounds){
   Nan::HandleScope scope;
   BluetoothHciSocket* p = node::ObjectWrap::Unwrap<BluetoothHciSocket>(info.This());
 
+
   if (info.Length() >= 2) {
     Local<Value> arg0 = info[0];
     if (arg0->IsObject()) {
       Local<Function> callback = info[1].As<Function>();
       int length = node::Buffer::Length(arg0);
-      Nan::Callback* nanCallback = new Nan::Callback(callback);
+    
+      if(p->_communicator->shouldConnectWorkaround(node::Buffer::Data(arg0), length)){
+        Nan::Callback* nanCallback = new Nan::Callback(callback);
 
-      BluetoothConnectWorker* worker = new BluetoothConnectWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), length);
-      worker->SaveToPersistent("data", arg0);
-      Nan::AsyncQueueWorker(worker);
+        BluetoothConnectWorker* worker = new BluetoothConnectWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), length);
+        worker->SaveToPersistent("data", arg0);
+        Nan::AsyncQueueWorker(worker);
+      }
     } else {
       Nan::ThrowTypeError("Argument 0 must be a buffer");
       return;

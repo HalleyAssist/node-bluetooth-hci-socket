@@ -64,8 +64,10 @@ public:
   bool write(char* data, int length);
   void cleanup();
   void cleanup_l2(unsigned short handle);
-  bool kernelDisconnectWorkArounds(char* data, int length);
+  const char* kernelDisconnectWorkArounds(char* data, int length);
   const char* kernelConnectWorkArounds(char* data, int length);
+  bool shouldWrite(char* data, int length);
+  bool shouldConnectWorkaround(char* data, int length);
   void log(const char* format, ...);
 
 private:
