@@ -420,8 +420,10 @@ bool BluetoothCommunicator::write(char* data, int length) {
     return true;
   }
 
-  if (::write(this->_socket, data, length) < 0) {
-    return false;
+  while (::write(this->_socket, data, length) < 0) {
+    if (errno != EAGAIN && errno != EINTR) {
+      return false;
+    }
   }
 
   return true;
@@ -632,7 +634,7 @@ bool BluetoothCommunicator::kernelConnectWorkArounds(char* data, int length)
     this->_l2sockets_connecting.clear();
   }
 
-  return false;
+  return false; // continue and do write
 }
 
 class BluetoothCleanupWorker : public Nan::AsyncWorker {
@@ -709,7 +711,7 @@ void BluetoothCommunicator::cleanup(){
   {
     if (now < it->second->expires())
     {
-      log("cleanup %02x:%02x:%02x:%02x:%02x:%02x (handle %d) due co connection timeout\n", ADDRESS_LOG(it->second->address), it->second->handle);
+      log("cleanup %02x:%02x:%02x:%02x:%02x:%02x (handle %d) due to timeout connecting\n", ADDRESS_LOG(it->second->address), it->second->handle);
       it->second->reason = "connection timeout";
       this->_l2sockets_connecting.erase(it++);    // or "it = m.erase(it)" since C++11
     }
@@ -861,7 +863,13 @@ NAN_METHOD(BluetoothHciSocket::SetFilter) {
     Local<Value> arg0 = info[0];
     if (arg0->IsObject()) {
       p->setFilter(node::Buffer::Data(arg0), node::Buffer::Length(arg0));
+    } else {
+      Nan::ThrowTypeError("First argument must be a buffer");
+      return;
     }
+  } else {
+    Nan::ThrowTypeError("Wrong number of arguments");
+    return;
   }
 
   info.GetReturnValue().SetUndefined();
@@ -888,8 +896,15 @@ NAN_METHOD(BluetoothHciSocket::Write) {
       Nan::Callback* nanCallback = new Nan::Callback(callback);
 
       BluetoothWriteWorker* worker = new BluetoothWriteWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), node::Buffer::Length(arg0));
+      worker->SaveToPersistent("data", arg0);
       Nan::AsyncQueueWorker(worker);
+    } else {
+      Nan::ThrowTypeError("First argument must be a buffer");
+      return;
     }
+  } else {
+    Nan::ThrowTypeError("Wrong number of arguments");
+    return;
   }
 
   info.GetReturnValue().SetUndefined();
@@ -906,14 +921,21 @@ NAN_METHOD(BluetoothHciSocket::KernelDisconnectWorkArounds){
       int length = node::Buffer::Length(arg0);
       Nan::Callback* nanCallback = new Nan::Callback(callback);
 
-      if(length == 22 || length == 7){       
+      if(length == 22 || length == 7 || length == 34){       
         BluetoothDisconnectWorker* worker = new BluetoothDisconnectWorker(nanCallback, p->_communicator, node::Buffer::Data(arg0), length);
+        worker->SaveToPersistent("data", arg0);
         Nan::AsyncQueueWorker(worker);
       }else{
         nanCallback->Call(0, 0);
         delete nanCallback;
       }
+    } else {
+      Nan::ThrowTypeError("Argument 0 must be a buffer");
+      return;
     }
+  } else{
+    Nan::ThrowTypeError("Expected 2 arguments");
+    return;
   }
 
   info.GetReturnValue().SetUndefined();
