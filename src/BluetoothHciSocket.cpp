@@ -702,6 +702,7 @@ const char *BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType
     _l2sockets_mutex.unlock();
     // 60000000000  = 1 minute
     l2socket_ptr = std::make_shared<BluetoothHciL2Socket>(this, _address, _addressType, addr, addrType, uv_hrtime() + L2_CONNECT_TIMEOUT);
+    l2socket_ptr->expires(uv_hrtime() + L2_CONNECT_TIMEOUT);
     _l2sockets_mutex.lock();
     this->_l2sockets_connecting[addr] = l2socket_ptr;
     _l2sockets_mutex.unlock();
