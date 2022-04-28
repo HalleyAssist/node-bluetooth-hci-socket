@@ -200,6 +200,7 @@ void BluetoothHciL2Socket::connect(const char *reason)
 
   if (bind(_socket, (struct sockaddr *)&l2_src, sizeof(l2_src)) < 0)
   {
+    _parent->log("BluetoothHCISocket: Connecting to %02x:%02x:%02x:%02x:%02x:%02x with socket %d failed due to bind error\n", ADDRESS_LOG(address), _socket);
     close(_socket);
     _socket = -1;
     return;
