@@ -119,6 +119,7 @@ private:
   void start();
   int bindRaw(int* devId);
   int bindUser(int* devId);
+  void bindCommon();
   void bindControl();
   bool isDevUp();
   void setFilter(char* data, int length);

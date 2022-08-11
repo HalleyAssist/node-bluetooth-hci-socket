@@ -324,23 +324,9 @@ void BluetoothHciSocket::start()
   }
 }
 
-int BluetoothHciSocket::bindRaw(int *devId)
+void BluetoothHciSocket::bindCommon()
 {
-  struct sockaddr_hci a = {};
   struct hci_dev_info di = {};
-
-  a.hci_family = AF_BLUETOOTH;
-  a.hci_dev = this->devIdFor(devId, true);
-  a.hci_channel = HCI_CHANNEL_RAW;
-
-  this->_communicator->_devId = a.hci_dev;
-  this->_communicator->_mode = HCI_CHANNEL_RAW;
-
-  if (bind(this->_communicator->_socket, (struct sockaddr *)&a, sizeof(a)) < 0)
-  {
-    Nan::ThrowError(Nan::ErrnoException(errno, "bind"));
-    return -1;
-  }
 
   // get the local address and address type
   memset(&di, 0x00, sizeof(di));
@@ -359,6 +345,26 @@ int BluetoothHciSocket::bindRaw(int *devId)
       this->_communicator->_addressType = 1;
     }
   }
+}
+
+int BluetoothHciSocket::bindRaw(int *devId)
+{
+  struct sockaddr_hci a = {};
+
+  a.hci_family = AF_BLUETOOTH;
+  a.hci_dev = this->devIdFor(devId, true);
+  a.hci_channel = HCI_CHANNEL_RAW;
+
+  this->_communicator->_devId = a.hci_dev;
+  this->_communicator->_mode = HCI_CHANNEL_RAW;
+
+  if (bind(this->_communicator->_socket, (struct sockaddr *)&a, sizeof(a)) < 0)
+  {
+    Nan::ThrowError(Nan::ErrnoException(errno, "bind"));
+    return -1;
+  }
+
+  bindCommon();
 
   return this->_communicator->_devId;
 }
@@ -372,13 +378,17 @@ int BluetoothHciSocket::bindUser(int *devId)
   a.hci_channel = HCI_CHANNEL_USER;
 
   this->_communicator->_devId = a.hci_dev;
-  this->_communicator->_mode = HCI_CHANNEL_USER;
 
   if (bind(this->_communicator->_socket, (struct sockaddr *)&a, sizeof(a)) < 0)
   {
+    this->_communicator->_mode = HCI_CHANNEL_RAW;
     Nan::ThrowError(Nan::ErrnoException(errno, "bind"));
     return -1;
   }
+
+  this->_communicator->_mode = HCI_CHANNEL_USER;
+
+  bindCommon();
 
   return this->_communicator->_devId;
 }
@@ -387,7 +397,6 @@ void BluetoothHciSocket::bindControl()
 {
   struct sockaddr_hci a = {};
 
-  memset(&a, 0, sizeof(a));
   a.hci_family = AF_BLUETOOTH;
   a.hci_dev = HCI_DEV_NONE;
   a.hci_channel = HCI_CHANNEL_CONTROL;
@@ -406,7 +415,6 @@ bool BluetoothHciSocket::isDevUp()
   struct hci_dev_info di = {};
   bool isUp = false;
 
-  memset(&di, 0x00, sizeof(di));
   di.dev_id = this->_communicator->_devId;
 
   if (ioctl(this->_communicator->_socket, HCIGETDEVINFO, (void *)&di) > -1)
