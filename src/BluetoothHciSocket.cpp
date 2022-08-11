@@ -415,6 +415,10 @@ bool BluetoothHciSocket::isDevUp()
   struct hci_dev_info di = {};
   bool isUp = false;
 
+  if(this->_communicator->_mode == HCI_CHANNEL_USER) {
+    return true;
+  }
+
   di.dev_id = this->_communicator->_devId;
 
   if (ioctl(this->_communicator->_socket, HCIGETDEVINFO, (void *)&di) > -1)
