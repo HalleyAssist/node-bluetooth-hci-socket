@@ -736,6 +736,10 @@ const char *BluetoothCommunicator::handleConnecting(bdaddr_t addr, char addrType
 
 bool BluetoothCommunicator::shouldWrite(char *data, int length)
 {
+  if(this->_communicator->_mode == HCI_CHANNEL_USER) {
+    return true;
+  }
+
   if (length > 14 && data[0] == 0x01 && data[1] == 0x43 && data[2] == 0x20)
   {
     return false;
@@ -751,6 +755,10 @@ bool BluetoothCommunicator::shouldWrite(char *data, int length)
 
 bool BluetoothCommunicator::shouldConnectWorkaround(char *data, int length)
 {
+  if(this->_communicator->_mode == HCI_CHANNEL_USER) {
+    return false;
+  }
+
   if (length > 14 && data[0] == 0x01 && data[1] == 0x43 && data[2] == 0x20)
   {
     return true;
